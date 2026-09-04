@@ -1,0 +1,4 @@
+root = true
+
+[src/ABOdds/Infrastructure/Persistence/Migrations/*.cs]
+generated_code = true

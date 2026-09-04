@@ -1,0 +1,12 @@
+bin/
+obj/
+**/bin\\*/
+**/obj\\*/
+.vs/
+.idea/
+.vscode/
+.DS_Store
+.env
+*.user
+TestResults/
+coverage/
