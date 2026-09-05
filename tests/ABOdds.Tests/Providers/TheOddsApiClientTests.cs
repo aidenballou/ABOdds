@@ -19,7 +19,7 @@ public sealed class TheOddsApiClientTests
         using var http = new HttpClient(new StalledBodyHandler());
         var client = new TheOddsApiClient(http,
             Options.Create(new OddsApiOptions { ApiKey = "synthetic", Markets = ["h2h"], RequestTimeout = TimeSpan.FromMilliseconds(50) }),
-            CreateFairValueOptions(), CreateEvOptions(), new FixedClock(Now), new OddsNormalizer(), NullLogger<TheOddsApiClient>.Instance);
+            CreateFairValueOptions(), CreateEvOptions(), new FixedClock(Now), NullLogger<TheOddsApiClient>.Instance);
         try
         {
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -36,7 +36,7 @@ public sealed class TheOddsApiClientTests
         using var http = new HttpClient(new RecordingHandler("not-json"));
         var client = new TheOddsApiClient(http,
             Options.Create(new OddsApiOptions { ApiKey = "do-not-log-this-key", Markets = ["h2h"] }),
-            CreateFairValueOptions(), CreateEvOptions(), new FixedClock(Now), new OddsNormalizer(), logger);
+            CreateFairValueOptions(), CreateEvOptions(), new FixedClock(Now), logger);
         await Assert.ThrowsAsync<System.Text.Json.JsonException>(() => client.GetOddsAsync("americanfootball_nfl"));
         Assert.Contains("credits remaining 997", Assert.Single(logger.Messages), StringComparison.Ordinal);
         Assert.DoesNotContain("do-not-log-this-key", logger.Messages.Single(), StringComparison.Ordinal);
@@ -93,27 +93,6 @@ public sealed class TheOddsApiClientTests
         Assert.Equal(2, Assert.Single(result.Events).Quotes.Count);
     }
 
-    [Fact]
-    public void Constructor_RejectsUnsupportedConfiguredMarket()
-    {
-        using var httpClient = new HttpClient(new RecordingHandler("[]"));
-        var oddsOptions = Options.Create(new OddsApiOptions
-        {
-            ApiKey = "key",
-            Markets = ["h2h", "player_pass_yds"]
-        });
-
-        var exception = Assert.Throws<InvalidOperationException>(() => new TheOddsApiClient(
-            httpClient,
-            oddsOptions,
-            CreateFairValueOptions(),
-            CreateEvOptions(),
-            new FixedClock(Now),
-            new OddsNormalizer(), NullLogger<TheOddsApiClient>.Instance));
-
-        Assert.Contains("only supports h2h, spreads, and totals", exception.Message, StringComparison.Ordinal);
-    }
-
     private static TheOddsApiClient CreateClient(HttpClient httpClient) => new(
         httpClient,
         Options.Create(new OddsApiOptions
@@ -125,15 +104,15 @@ public sealed class TheOddsApiClientTests
         CreateFairValueOptions(),
         CreateEvOptions(),
         new FixedClock(Now),
-        new OddsNormalizer(), NullLogger<TheOddsApiClient>.Instance);
+        NullLogger<TheOddsApiClient>.Instance);
 
     private static IOptions<FairValueOptions> CreateFairValueOptions() =>
         Options.Create(new FairValueOptions
         {
             ReferenceBooks =
             [
-                new ReferenceBookOptions { Key = "Pinnacle" },
-                new ReferenceBookOptions { Key = "betonlineag" }
+                new BookOptions { Key = "Pinnacle" },
+                new BookOptions { Key = "betonlineag" }
             ]
         });
 
@@ -142,8 +121,7 @@ public sealed class TheOddsApiClientTests
         {
             TargetBooks =
             [
-                new TargetBookOptions { Key = "FanDuel" },
-                new TargetBookOptions { Key = "pinnacle" }
+                new BookOptions { Key = " FanDuel " }
             ]
         });
 

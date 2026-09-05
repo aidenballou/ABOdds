@@ -53,25 +53,21 @@ public sealed class EvScannerTests
         Assert.Equal(0.03m, opportunity.ExpectedValue);
     }
 
-    [Fact]
-    public void Scan_RequiresAnExactSpreadLineMatch()
+    [Theory]
+    [InlineData(MarketKeys.Spread, "Team A", 3.5, 4)]
+    [InlineData(MarketKeys.Spread, "Team A", -3.5, 3.5)]
+    [InlineData(MarketKeys.Total, "Over", 44.5, 45.5)]
+    public void Scan_RequiresAnExactLineAndSign(string market, string selection, decimal fairLine, decimal targetLine)
     {
-        var fairValue = CalculationTestData.FairValue(0.55m, line: 3.5m);
-        var quote = CalculationTestData.Quote(
-            MarketKeys.Spread,
-            "fanduel",
-            "Team A",
-            2m,
-            4m);
+        var fairValue = CalculationTestData.FairValue(0.55m, selection, line: fairLine);
+        var quote = CalculationTestData.Quote(market, "fanduel", selection, 2m, targetLine);
 
-        var result = EvScanner.Scan(
-            [quote],
-            [fairValue],
-            CalculationTestData.Now,
-            MaximumSourceAge,
-            Options(0.03m, "fanduel"));
-
-        Assert.Empty(result);
+        Assert.Empty(EvScanner.Scan([quote], [fairValue], CalculationTestData.Now,
+            MaximumSourceAge, Options(0.03m, "fanduel")));
+        var match = Assert.Single(EvScanner.Scan([quote with { Line = fairLine }], [fairValue],
+            CalculationTestData.Now, MaximumSourceAge, Options(0.03m, "fanduel")));
+        Assert.Equal(fairLine, match.Line);
+        Assert.Equal(0.10m, match.ExpectedValue);
     }
 
     [Fact]
@@ -240,7 +236,7 @@ public sealed class EvScannerTests
         {
             MinimumExpectedValue = minimumExpectedValue,
             TargetBooks = books
-                .Select(book => new TargetBookOptions { Key = book, DisplayName = book })
+                .Select(book => new BookOptions { Key = book })
                 .ToList()
         };
 }

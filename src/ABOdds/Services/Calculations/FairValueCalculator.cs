@@ -52,11 +52,6 @@ public static class FairValueCalculator
                 }
 
                 var impliedProbabilityTotal = outcomes.Sum(outcome => 1m / outcome.DecimalOdds);
-                if (impliedProbabilityTotal <= 0m)
-                {
-                    continue;
-                }
-
                 var outcomeSetKey = string.Join(
                     "\u001F",
                     outcomes

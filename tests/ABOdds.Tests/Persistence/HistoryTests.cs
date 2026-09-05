@@ -17,6 +17,7 @@ public sealed class HistoryTests : PostgresTest
         next = next with { Events = [next.Events.Single() with { CommenceTimeUtc = Now.AddHours(3), HomeTeam = "Renamed home team" }] };
         await Ingestion.SaveAsync(next, default);
         var quotes = (await Calculations.LoadBatchQuotesAsync(first.BatchId, default))!.Quotes;
+        Assert.Equal(5, quotes.Count);
         Assert.All(quotes, quote => Assert.Equal(Now.AddHours(2), quote.CommenceTimeUtc));
         Assert.All(quotes, quote => Assert.Equal("Houston Texans", quote.HomeTeam));
         var opportunity = Assert.Single((await Calculations.LoadAlertBatchAsync(first.BatchId, default))!.Opportunities).Opportunity;
@@ -39,7 +40,14 @@ public sealed class HistoryTests : PostgresTest
         var batch = await db.PollBatches.SingleAsync();
         Assert.Equal(Now, batch.ObservedAtUtc);
         Assert.NotNull(batch.EventMetadataJson);
-        Assert.True(await db.FairValues.AllAsync(value => value.CalculationVersion == FairValueCalculator.Version));
+        var fairValues = await db.FairValues.ToListAsync();
+        Assert.Equal(2, fairValues.Count);
+        Assert.All(fairValues, value =>
+        {
+            Assert.Equal(FairValueCalculator.Version, value.CalculationVersion);
+            Assert.Equal(processed, value.CalculatedAtUtc);
+        });
+        Assert.Equal(processed, (await db.EvOpportunities.SingleAsync()).DetectedAtUtc);
         Assert.Equal(processed, batch.FairValueCompletedAtUtc);
         Assert.Equal(processed, batch.EvCompletedAtUtc);
         Assert.Equal(processed, batch.AlertRulesCompletedAtUtc);

@@ -6,8 +6,6 @@ using Microsoft.EntityFrameworkCore;
 namespace ABOdds.Infrastructure.Persistence;
 
 public sealed record BatchQuotes(
-    Guid BatchId,
-    string SportKey,
     DateTimeOffset ObservedAtUtc,
     IReadOnlyList<MarketQuote> Quotes);
 
@@ -73,10 +71,10 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         var observedQuotes = quotes.Select(quote => metadata.TryGetValue(quote.ProviderEventId, out var game)
             ? quote with { SportKey = game.SportKey, HomeTeam = game.HomeTeam, AwayTeam = game.AwayTeam, CommenceTimeUtc = game.CommenceTimeUtc }
             : quote).ToArray();
-        return new BatchQuotes(batch.Id, batch.SportKey, batch.ObservedAtUtc, observedQuotes);
+        return new BatchQuotes(batch.ObservedAtUtc, observedQuotes);
     }
 
-    public async Task<bool> SaveFairValuesAsync(
+    public async Task SaveFairValuesAsync(
         Guid batchId,
         IReadOnlyList<CalculatedFairValue> fairValues,
         DateTimeOffset calculatedAtUtc,
@@ -86,11 +84,9 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         var batch = await dbContext.PollBatches.SingleAsync(value => value.Id == batchId, cancellationToken);
         if (batch.FairValueCompletedAtUtc is not null)
         {
-            return false;
+            return;
         }
 
-        var priorValues = dbContext.FairValues.Where(value => value.PollBatchId == batchId);
-        dbContext.FairValues.RemoveRange(priorValues);
         foreach (var fairValue in fairValues)
         {
             dbContext.FairValues.Add(new FairValueEntity
@@ -114,7 +110,6 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         batch.FairValueCompletedAtUtc = calculatedAtUtc;
         ClearFailure(batch);
         await dbContext.SaveChangesAsync(cancellationToken);
-        return true;
     }
 
     public async Task<IReadOnlyList<PersistedFairValue>> LoadFairValuesAsync(
@@ -139,7 +134,7 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
             .ToArray();
     }
 
-    public async Task<bool> SaveEvOpportunitiesAsync(
+    public async Task SaveEvOpportunitiesAsync(
         Guid batchId,
         IReadOnlyList<CalculatedEvOpportunity> opportunities,
         DateTimeOffset detectedAtUtc,
@@ -149,11 +144,9 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         var batch = await dbContext.PollBatches.SingleAsync(value => value.Id == batchId, cancellationToken);
         if (batch.EvCompletedAtUtc is not null)
         {
-            return false;
+            return;
         }
 
-        var priorOpportunities = dbContext.EvOpportunities.Where(value => value.PollBatchId == batchId);
-        dbContext.EvOpportunities.RemoveRange(priorOpportunities);
         foreach (var opportunity in opportunities)
         {
             dbContext.EvOpportunities.Add(new EvOpportunityEntity
@@ -170,7 +163,6 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         batch.EvCompletedAtUtc = detectedAtUtc;
         ClearFailure(batch);
         await dbContext.SaveChangesAsync(cancellationToken);
-        return true;
     }
 
     public async Task<AlertBatchData?> LoadAlertBatchAsync(Guid batchId, CancellationToken cancellationToken)

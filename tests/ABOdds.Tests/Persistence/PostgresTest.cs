@@ -1,7 +1,6 @@
 using ABOdds.Configuration;
 using ABOdds.Domain;
 using ABOdds.Infrastructure.Persistence;
-using ABOdds.Services.Alerts;
 using ABOdds.Services.Calculations;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -34,13 +33,13 @@ public abstract class PostgresTest : IAsyncLifetime
     {
         ReferenceBooks =
         [
-            new() { Key = "pinnacle", DisplayName = "Pinnacle" },
-            new() { Key = "betonlineag", DisplayName = "BetOnline" }
+            new() { Key = "pinnacle" },
+            new() { Key = "betonlineag" }
         ]
     };
     protected static EvOptions Ev => new()
     {
-        TargetBooks = [new() { Key = "fanduel", DisplayName = "FanDuel" }]
+        TargetBooks = [new() { Key = "fanduel" }]
     };
 
     public async Task InitializeAsync()
@@ -56,7 +55,7 @@ public abstract class PostgresTest : IAsyncLifetime
         Factory = _services.GetRequiredService<IDbContextFactory<BettingDbContext>>();
         Ingestion = new(Factory);
         Calculations = new(Factory);
-        Alerts = new(Factory, new AlertDecisionService(Options.Create(Ev)));
+        Alerts = new(Factory, Options.Create(Ev));
         await using var db = await Factory.CreateDbContextAsync();
         await db.Database.MigrateAsync();
     }
@@ -77,9 +76,9 @@ public abstract class PostgresTest : IAsyncLifetime
         var time = observedAt ?? Now;
         var quotes = References.ReferenceBooks.SelectMany(book => new[]
         {
-            new NormalizedQuote("spreads", "pregame", book.Key, book.DisplayName,
+            new NormalizedQuote("spreads", "pregame", book.Key, book.Key == "pinnacle" ? "Pinnacle" : "BetOnline",
                 "indianapolis colts", "Indianapolis Colts", 1.8m, 3.5m, time),
-            new NormalizedQuote("spreads", "pregame", book.Key, book.DisplayName,
+            new NormalizedQuote("spreads", "pregame", book.Key, book.Key == "pinnacle" ? "Pinnacle" : "BetOnline",
                 "houston texans", "Houston Texans", 2.1m, -3.5m, time)
         }).Append(new NormalizedQuote("spreads", "pregame", "fanduel", "FanDuel",
             "indianapolis colts", "Indianapolis Colts", targetPrice, 3.5m, time)).ToArray();

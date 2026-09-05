@@ -41,16 +41,16 @@ internal static class TestOpportunity
                     "pinnacle",
                     "Pinnacle",
                     1.826446281m,
-                    0.548m,
-                    0.625m,
-                    updatedAt),
+                    fairProbability,
+                    1m,
+                    updatedAt) { Role = FairValueSourceRole.Primary },
                 new FairValueSource(
                     "betonlineag",
                     "BetOnline",
                     1.813008130m,
                     0.552m,
-                    0.375m,
-                    updatedAt)
+                    0m,
+                    updatedAt) { Role = FairValueSourceRole.Validation }
             ]);
     }
 }

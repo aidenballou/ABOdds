@@ -59,6 +59,6 @@ internal static class CalculationTestData
                     1.9m,
                     fairProbability,
                     1m,
-                    sourceUpdatedAtUtc ?? Now.AddSeconds(-10))
+                    sourceUpdatedAtUtc ?? Now.AddSeconds(-10)) { Role = FairValueSourceRole.Primary }
             ]);
 }

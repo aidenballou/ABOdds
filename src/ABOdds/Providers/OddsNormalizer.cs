@@ -2,18 +2,9 @@ using ABOdds.Domain;
 
 namespace ABOdds.Providers;
 
-public interface IOddsNormalizer
+public static class OddsNormalizer
 {
-    NormalizedOddsBatch Normalize(
-        string sportKey,
-        DateTimeOffset observedAtUtc,
-        IReadOnlyList<TheOddsApiEventDto> sourceEvents,
-        ApiQuotaSnapshot quota);
-}
-
-public sealed class OddsNormalizer : IOddsNormalizer
-{
-    public NormalizedOddsBatch Normalize(
+    public static NormalizedOddsBatch Normalize(
         string sportKey,
         DateTimeOffset observedAtUtc,
         IReadOnlyList<TheOddsApiEventDto> sourceEvents,

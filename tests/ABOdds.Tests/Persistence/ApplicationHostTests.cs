@@ -61,7 +61,17 @@ public sealed class ApplicationHostTests : PostgresTest
         {
             await WaitForSentAsync(2, timeout.Token);
             Assert.Equal(2, discord.Messages.Count);
-            Assert.All(discord.Messages, message => Assert.Contains("Indianapolis Colts @ Houston Texans", message, StringComparison.Ordinal));
+            Assert.All(discord.Messages, message =>
+            {
+                Assert.Contains("Indianapolis Colts @ Houston Texans", message, StringComparison.Ordinal);
+                Assert.Contains("**Indianapolis Colts +3.5** · **+100**", message, StringComparison.Ordinal);
+                Assert.Contains("FanDuel · **+7.7% EV**", message, StringComparison.Ordinal);
+                Assert.Contains("BetOnline confirmed", message, StringComparison.Ordinal);
+            });
+            await using var db = await Factory.CreateDbContextAsync();
+            var alerts = await db.Alerts.AsNoTracking().ToListAsync();
+            Assert.Equal(2, alerts.Count);
+            Assert.All(alerts, alert => Assert.Equal(AlertReason.New, alert.Reason));
             Assert.Equal(2, odds.Requests.Count);
         }
         finally { lifetime.StopApplication(); await run; }
@@ -100,6 +110,19 @@ public sealed class ApplicationHostTests : PostgresTest
         await host.RunAsync(timeout.Token);
         Assert.Equal(1, worker.ExitCode);
         Assert.Single(odds.Requests);
+        Assert.Empty(discord.Messages);
+    }
+
+    [PostgresFact]
+    public async Task RealHost_InvalidMarketStopsStartupBeforeAnyPaidRequest()
+    {
+        var odds = new OddsHandler();
+        var discord = new DiscordHandler();
+        var builder = await BuilderAsync(odds, discord, once: true);
+        builder.Configuration["OddsApi:Markets:0"] = "player_pass_yds";
+        using var host = BuildTestHost(builder);
+        await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync());
+        Assert.Empty(odds.Requests);
         Assert.Empty(discord.Messages);
     }
 

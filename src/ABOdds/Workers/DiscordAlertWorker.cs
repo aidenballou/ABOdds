@@ -56,7 +56,6 @@ public sealed class DiscordAlertWorker(
         if (!_options.Enabled)
         {
             LogDisabled(logger, null);
-            await WaitUntilStoppedAsync(stoppingToken);
             return;
         }
 
@@ -81,7 +80,7 @@ public sealed class DiscordAlertWorker(
                 }
                 else
                 {
-                    await WaitForWorkAsync(stoppingToken);
+                    await Task.Delay(_options.OutboxPollInterval, stoppingToken);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -221,21 +220,5 @@ public sealed class DiscordAlertWorker(
         var exponent = Math.Min(priorAttempts, 10);
         var seconds = Math.Pow(2, exponent + 1);
         return TimeSpan.FromSeconds(Math.Min(seconds, _options.MaximumRetryDelay.TotalSeconds));
-    }
-
-    private async Task WaitForWorkAsync(CancellationToken stoppingToken)
-    {
-        await Task.Delay(_options.OutboxPollInterval, stoppingToken);
-    }
-
-    private static async Task WaitUntilStoppedAsync(CancellationToken stoppingToken)
-    {
-        try
-        {
-            await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-        {
-        }
     }
 }

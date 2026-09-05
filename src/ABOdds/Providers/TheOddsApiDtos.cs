@@ -7,12 +7,6 @@ public sealed record TheOddsApiEventDto
     [JsonPropertyName("id")]
     public string Id { get; init; } = string.Empty;
 
-    [JsonPropertyName("sport_key")]
-    public string SportKey { get; init; } = string.Empty;
-
-    [JsonPropertyName("sport_title")]
-    public string SportTitle { get; init; } = string.Empty;
-
     [JsonPropertyName("commence_time")]
     public DateTimeOffset CommenceTime { get; init; }
 
@@ -57,9 +51,6 @@ public sealed record TheOddsApiOutcomeDto
 {
     [JsonPropertyName("name")]
     public string Name { get; init; } = string.Empty;
-
-    [JsonPropertyName("description")]
-    public string? Description { get; init; }
 
     [JsonPropertyName("price")]
     public decimal Price { get; init; }

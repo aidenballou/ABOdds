@@ -11,7 +11,6 @@ public sealed class OddsNormalizerTests
     [Fact]
     public void Normalize_FiltersCommencedInvalidAndUnsupportedQuotes()
     {
-        var normalizer = new OddsNormalizer();
         var sourceEvents = new[]
         {
             CreateFutureEvent(),
@@ -19,7 +18,7 @@ public sealed class OddsNormalizerTests
             CreateEvent("past", ObservedAt.AddMinutes(-1))
         };
 
-        var result = normalizer.Normalize(
+        var result = OddsNormalizer.Normalize(
             "americanfootball_nfl",
             ObservedAt,
             sourceEvents,
@@ -40,7 +39,7 @@ public sealed class OddsNormalizerTests
     [Fact]
     public void Normalize_UsesNormalizedSelectionAndMostSpecificSourceTimestamp()
     {
-        var result = new OddsNormalizer().Normalize(
+        var result = OddsNormalizer.Normalize(
             "americanfootball_nfl",
             ObservedAt,
             [CreateFutureEvent()],
@@ -70,7 +69,6 @@ public sealed class OddsNormalizerTests
     private static TheOddsApiEventDto CreateFutureEvent() => new()
     {
         Id = " future ",
-        SportKey = "americanfootball_nfl",
         HomeTeam = "Houston Texans",
         AwayTeam = "Indianapolis Colts",
         CommenceTime = ObservedAt.AddHours(1),
@@ -131,7 +129,6 @@ public sealed class OddsNormalizerTests
     private static TheOddsApiEventDto CreateEvent(string id, DateTimeOffset commenceTime) => new()
     {
         Id = id,
-        SportKey = "americanfootball_nfl",
         HomeTeam = "Home",
         AwayTeam = "Away",
         CommenceTime = commenceTime

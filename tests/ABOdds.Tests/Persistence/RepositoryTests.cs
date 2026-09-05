@@ -28,7 +28,10 @@ public sealed class RepositoryTests : PostgresTest
                 _ => "BetOnline confirmed"
             };
             Assert.Contains(expected, message, StringComparison.Ordinal);
-            Assert.DoesNotContain(opportunity.Sources, source => source.BookmakerKey == "lowvig");
+            Assert.Equal(excludedBook == "none" ? 2 : 1, opportunity.Sources.Count);
+            Assert.Equal(excludedBook == "pinnacle" ? FairValueSourceRole.Fallback : FairValueSourceRole.Primary,
+                opportunity.Sources[0].Role);
+            if (excludedBook == "none") Assert.Equal(FairValueSourceRole.Validation, opportunity.Sources[1].Role);
         }
     }
 
@@ -55,8 +58,8 @@ public sealed class RepositoryTests : PostgresTest
     {
         var batch = await ProcessAsync(Batch());
         var alertId = Assert.Single(await Alerts.ApplyRulesAsync(batch, default));
-        Assert.False(await Calculations.SaveFairValuesAsync(batch.BatchId, [], Now, default));
-        Assert.False(await Calculations.SaveEvOpportunitiesAsync(batch.BatchId, [], Now, default));
+        await Calculations.SaveFairValuesAsync(batch.BatchId, [], Now.AddSeconds(1), default);
+        await Calculations.SaveEvOpportunitiesAsync(batch.BatchId, [], Now.AddSeconds(1), default);
         Assert.Empty(await Alerts.ApplyRulesAsync(batch, default));
         var pending = await Alerts.GetNextPendingAsync(Now, default);
         Assert.Equal(alertId, pending!.Id);
@@ -71,8 +74,8 @@ public sealed class RepositoryTests : PostgresTest
         Assert.Equal(1, await db.Alerts.CountAsync());
         Assert.Equal(AlertDeliveryStatus.Sent, (await db.Alerts.SingleAsync()).DeliveryStatus);
         var saved = await db.PollBatches.SingleAsync();
-        Assert.NotNull(saved.FairValueCompletedAtUtc);
-        Assert.NotNull(saved.EvCompletedAtUtc);
+        Assert.Equal(Now, saved.FairValueCompletedAtUtc);
+        Assert.Equal(Now, saved.EvCompletedAtUtc);
         Assert.NotNull(saved.AlertRulesCompletedAtUtc);
     }
 

@@ -28,13 +28,12 @@ public sealed class FairValueOptions
 {
     public const string SectionName = "FairValue";
 
-    public IReadOnlyList<ReferenceBookOptions> ReferenceBooks { get; init; } = [];
+    public IReadOnlyList<BookOptions> ReferenceBooks { get; init; } = [];
 }
 
-public sealed class ReferenceBookOptions
+public sealed class BookOptions
 {
     public string Key { get; init; } = string.Empty;
-    public string DisplayName { get; init; } = string.Empty;
 }
 
 public sealed class EvOptions
@@ -44,13 +43,7 @@ public sealed class EvOptions
     public decimal MinimumExpectedValue { get; init; } = 0.03m;
     public decimal MaximumReferenceEvDifference { get; init; } = 0.03m;
     public decimal RealertImprovement { get; init; } = 0.01m;
-    public IReadOnlyList<TargetBookOptions> TargetBooks { get; init; } = [];
-}
-
-public sealed class TargetBookOptions
-{
-    public string Key { get; init; } = string.Empty;
-    public string DisplayName { get; init; } = string.Empty;
+    public IReadOnlyList<BookOptions> TargetBooks { get; init; } = [];
 }
 
 public sealed class DiscordOptions

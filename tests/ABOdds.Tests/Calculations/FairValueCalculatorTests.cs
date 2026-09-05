@@ -300,7 +300,24 @@ public sealed class FairValueCalculatorTests
             CalculationTestData.Quote(MarketKeys.Moneyline, "pinnacle", "Team B", 2m, sourceUpdatedAtUtc: oldest)
         };
         var result = FairValueCalculator.Calculate(quotes, CalculationTestData.Now, MaximumSourceAge, Options());
+        Assert.Equal(2, result.Count);
         Assert.All(result, value => Assert.Equal(oldest, Assert.Single(value.Sources).SourceUpdatedAtUtc));
+    }
+
+    [Theory]
+    [InlineData(MarketKeys.Spread, "Team A", "Team B", 3.5, 3.5)]
+    [InlineData(MarketKeys.Spread, "Team A", "Unknown", 3.5, -3.5)]
+    [InlineData(MarketKeys.Total, "Over", "Under", 44.5, 45.5)]
+    [InlineData(MarketKeys.Total, "Over", "Unknown", 44.5, 44.5)]
+    public void Calculate_RejectsIncompleteOrMismatchedReferencePairs(
+        string market, string first, string second, decimal firstLine, decimal secondLine)
+    {
+        var quotes = new[]
+        {
+            CalculationTestData.Quote(market, "pinnacle", first, 2m, firstLine),
+            CalculationTestData.Quote(market, "pinnacle", second, 2m, secondLine)
+        };
+        Assert.Empty(FairValueCalculator.Calculate(quotes, CalculationTestData.Now, MaximumSourceAge, Options()));
     }
 
     private static FairValueOptions Options() => new()

@@ -1,7 +1,9 @@
 using System.Text.Json;
+using ABOdds.Configuration;
 using ABOdds.Domain;
 using ABOdds.Services.Alerts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace ABOdds.Infrastructure.Persistence;
 
@@ -17,7 +19,7 @@ public sealed record PendingAlert(
 
 public sealed class AlertRepository(
     IDbContextFactory<BettingDbContext> contextFactory,
-    AlertDecisionService decisionService)
+    IOptions<EvOptions> evOptions)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -52,7 +54,7 @@ public sealed class AlertRepository(
         }
 
         var currentOpportunities = alertBatch.Opportunities
-            .GroupBy(value => BetKeyFactory.Create(value.Opportunity))
+            .GroupBy(value => value.Opportunity.BetKey)
             .Select(group => group.OrderByDescending(value => value.Opportunity.ExpectedValue).First())
             .ToArray();
         var currentMarketIds = currentOpportunities
@@ -66,7 +68,7 @@ public sealed class AlertRepository(
             .ToListAsync(cancellationToken);
         var statesByKey = states.ToDictionary(ToBetKey);
         var currentKeys = currentOpportunities
-            .Select(value => BetKeyFactory.Create(value.Opportunity))
+            .Select(value => value.Opportunity.BetKey)
             .ToHashSet();
 
         foreach (var state in states.Where(value => value.IsActive && !currentKeys.Contains(ToBetKey(value))))
@@ -79,19 +81,13 @@ public sealed class AlertRepository(
         foreach (var current in currentOpportunities)
         {
             var opportunity = current.Opportunity;
-            var key = BetKeyFactory.Create(opportunity);
+            var key = opportunity.BetKey;
             statesByKey.TryGetValue(key, out var state);
-            var previousState = state?.LastAlertedExpectedValue is null
-                ? null
-                : new AlertTrackingState(
-                    key,
-                    // A delivered baseline from an earlier appearance does not cover this one.
-                    state.IsActive && (state.LastDisappearedAtUtc is null ||
-                        state.LastAlertedAtUtc > state.LastDisappearedAtUtc),
-                    state.LastSeenAtUtc,
-                    state.LastSeenExpectedValue,
-                    state.LastAlertedExpectedValue.Value);
-            var decision = decisionService.Evaluate(opportunity, previousState, alertBatch.ObservedAtUtc);
+            // A baseline from an earlier appearance does not cover this one.
+            var hasActiveBaseline = state is { IsActive: true } &&
+                (state.LastDisappearedAtUtc is null || state.LastAlertedAtUtc > state.LastDisappearedAtUtc);
+            var reason = AlertDecisionService.Evaluate(opportunity.ExpectedValue,
+                state?.LastAlertedExpectedValue, hasActiveBaseline, evOptions.Value.RealertImprovement);
 
             if (state is null)
             {
@@ -113,7 +109,7 @@ public sealed class AlertRepository(
             state.LastSeenExpectedValue = opportunity.ExpectedValue;
             state.LastSeenDecimalOdds = opportunity.DecimalOdds;
 
-            if (!decision.ShouldAlert)
+            if (reason is null)
             {
                 continue;
             }
@@ -128,7 +124,7 @@ public sealed class AlertRepository(
                 Id = alertId,
                 AlertStateId = state.Id,
                 EvOpportunityId = current.OpportunityId,
-                Reason = decision.Reason!.Value,
+                Reason = reason.Value,
                 Message = DiscordAlertFormatter.Format(opportunity, alertBatch.ObservedAtUtc),
                 DeliveryStatus = AlertDeliveryStatus.Pending,
                 NextAttemptAtUtc = alertBatch.ProcessedAtUtc,

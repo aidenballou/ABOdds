@@ -74,7 +74,8 @@ public sealed class DiscordAlertFormatterTests
         Assert.Contains("NCAAF | Total", secondMessage, StringComparison.Ordinal);
         Assert.Contains($"Kickoff: <t:{second.CommenceTimeUtc.ToUnixTimeSeconds()}:f>", secondMessage, StringComparison.Ordinal);
         Assert.Contains("**Over 44.5**", firstMessage, StringComparison.Ordinal);
-        Assert.NotEqual(firstMessage, secondMessage);
+        Assert.DoesNotContain("Over +44.5", firstMessage, StringComparison.Ordinal);
+        Assert.DoesNotContain("exclude pushes", firstMessage, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -86,28 +87,12 @@ public sealed class DiscordAlertFormatterTests
 
         Assert.StartsWith("**Colts +3.5** · **-105**\nFanDuel · **+7.4% EV**", message, StringComparison.Ordinal);
         Assert.True(message.Length < 600);
-        Assert.Contains("**Colts +3.5**", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("exclude pushes", message, StringComparison.Ordinal);
         Assert.DoesNotContain("+EV BET", message, StringComparison.Ordinal);
         Assert.Contains("Fair **-122**", message, StringComparison.Ordinal);
         Assert.Contains("Win probability 55.0%", message, StringComparison.Ordinal);
-        Assert.Contains("**+7.4% EV**", message, StringComparison.Ordinal);
         Assert.DoesNotContain("Reference prices", message, StringComparison.Ordinal);
         Assert.EndsWith($"Updated <t:{updatedAt.ToUnixTimeSeconds()}:R>", message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Format_TotalOpportunity_DoesNotPrefixTotalWithPlusSign()
-    {
-        var opportunity = TestOpportunity.Create(
-            line: 44.5m,
-            marketKey: MarketKeys.Total);
-
-        var message = DiscordAlertFormatter.Format(
-            opportunity,
-            new DateTimeOffset(2026, 9, 4, 2, 17, 32, TimeSpan.Zero));
-
-        Assert.Contains("**Colts 44.5**", message, StringComparison.Ordinal);
-        Assert.DoesNotContain("Colts +44.5", message, StringComparison.Ordinal);
     }
 
     [Fact]

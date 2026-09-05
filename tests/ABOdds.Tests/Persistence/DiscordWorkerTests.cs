@@ -1,6 +1,7 @@
 using System.Net;
 using ABOdds.Configuration;
 using ABOdds.Domain;
+using ABOdds.Infrastructure.Persistence;
 using ABOdds.Services.Alerts;
 using ABOdds.Time;
 using ABOdds.Workers;
@@ -13,7 +14,7 @@ namespace ABOdds.Tests.Persistence;
 public sealed class DiscordWorkerTests : PostgresTest
 {
     [PostgresFact]
-    public async Task RateLimit_PausesAllMessagesAndNewAlertsAcrossRestart()
+    public async Task RateLimit_PersistsCooldownForExistingAndNewAlerts()
     {
         var batch = Batch();
         var game = batch.Events.Single();
@@ -33,7 +34,6 @@ public sealed class DiscordWorkerTests : PostgresTest
                     if (await db.Alerts.AnyAsync(value => value.DeliveryAttempts > 0, timeout.Token)) break;
                     await Task.Delay(10, timeout.Token);
                 }
-                await Task.Delay(100);
                 Assert.Equal(1, client.Calls);
             }
             finally { await worker.StopAsync(default); }
@@ -43,19 +43,14 @@ public sealed class DiscordWorkerTests : PostgresTest
         var freshGame = fresh.Events.Single();
         fresh = fresh with { Events = [freshGame, freshGame with { ProviderEventId = "event-2" }, freshGame with { ProviderEventId = "event-3" }] };
         Assert.Single(await Alerts.ApplyRulesAsync(await ProcessAsync(fresh), default));
-        using (var restartedWorker = CreateWorker(client, gate))
-        {
-            await restartedWorker.StartAsync(default);
-            await Task.Delay(100);
-            await restartedWorker.StopAsync(default);
-        }
+        var restarted = new AlertRepository(Factory, Options.Create(Ev));
         Assert.Equal(1, client.Calls);
-        Assert.Null(await Alerts.GetNextPendingAsync(Now.AddSeconds(59), default));
-        Assert.NotNull(await Alerts.GetNextPendingAsync(Now.AddSeconds(60.25), default));
+        Assert.Null(await restarted.GetNextPendingAsync(Now.AddSeconds(60), default));
+        Assert.NotNull(await restarted.GetNextPendingAsync(Now.AddSeconds(60.25), default));
     }
 
     [PostgresFact]
-    public async Task SuccessfulSend_ExhaustedBucketPausesOutboxAcrossRestart()
+    public async Task SuccessfulSend_PersistsExhaustedBucketCooldown()
     {
         var batch = Batch();
         batch = batch with { Events = [batch.Events[0], batch.Events[0] with { ProviderEventId = "event-2" }] };
@@ -77,15 +72,10 @@ public sealed class DiscordWorkerTests : PostgresTest
             }
             finally { await worker.StopAsync(default); }
         }
-        using (var restarted = CreateWorker(client, gate))
-        {
-            await restarted.StartAsync(default);
-            await Task.Delay(100);
-            await restarted.StopAsync(default);
-        }
+        var restarted = new AlertRepository(Factory, Options.Create(Ev));
         Assert.Equal(1, client.Calls);
-        Assert.Null(await Alerts.GetNextPendingAsync(Now.AddSeconds(10), default));
-        Assert.NotNull(await Alerts.GetNextPendingAsync(Now.AddSeconds(10.25), default));
+        Assert.Null(await restarted.GetNextPendingAsync(Now.AddSeconds(10), default));
+        Assert.NotNull(await restarted.GetNextPendingAsync(Now.AddSeconds(10.25), default));
     }
 
     [PostgresFact]
@@ -177,6 +167,78 @@ public sealed class DiscordWorkerTests : PostgresTest
             Assert.True(client.Cancelled);
         }
         finally { await worker.StopAsync(default); }
+    }
+
+    [PostgresFact]
+    public async Task InvalidPendingAlerts_ExpireWithoutCallingTheWebhook()
+    {
+        foreach (var cause in new[] { "started", "stale", "superseded" })
+        {
+            var batch = Batch();
+            batch = batch with { Events = [batch.Events[0] with { ProviderEventId = cause }] };
+            var id = Assert.Single(await Alerts.ApplyRulesAsync(await ProcessAsync(batch), default));
+            if (cause == "superseded")
+            {
+                Assert.Empty(await Alerts.ApplyRulesAsync(await ProcessAsync(Batch(Now.AddSeconds(1), 1.5m)), default));
+            }
+            var now = cause == "started" ? Now.AddHours(2) : cause == "stale" ? Now.AddSeconds(91) : Now;
+            var client = new SuccessfulWebhook(null);
+            using var gate = new SemaphoreSlim(1, 1);
+            using var worker = CreateWorker(client, gate, now: now);
+            await worker.StartAsync(default);
+            try { await WaitForStatusAsync(id, AlertDeliveryStatus.Expired); }
+            finally { await worker.StopAsync(default); }
+            Assert.Equal(0, client.Calls);
+            await using var db = await Factory.CreateDbContextAsync();
+            var alert = await db.Alerts.SingleAsync(value => value.Id == id);
+            Assert.Equal(0, alert.DeliveryAttempts);
+            Assert.Contains(cause == "started" ? "started" : cause == "stale" ? "stale" : "replaced",
+                alert.LastDeliveryError!, StringComparison.Ordinal);
+        }
+    }
+
+    [PostgresFact]
+    public async Task PermanentHttpFailure_ReleasesBaselineForTheNextFreshOpportunity()
+    {
+        var id = Assert.Single(await Alerts.ApplyRulesAsync(await ProcessAsync(Batch()), default));
+        using var gate = new SemaphoreSlim(1, 1);
+        using var worker = CreateWorker(new StatusWebhook(HttpStatusCode.BadRequest), gate);
+        await worker.StartAsync(default);
+        try { await WaitForStatusAsync(id, AlertDeliveryStatus.Failed, minimumAttempts: 1); }
+        finally { await worker.StopAsync(default); }
+
+        await using var db = await Factory.CreateDbContextAsync();
+        Assert.Null((await db.AlertStates.SingleAsync()).LastAlertedExpectedValue);
+        Assert.Single(await Alerts.ApplyRulesAsync(await ProcessAsync(Batch(Now.AddSeconds(1))), default));
+    }
+
+    [PostgresFact]
+    public async Task ServerError_RetriesWithBackoffAndDeliversTheSameAlert()
+    {
+        var id = Assert.Single(await Alerts.ApplyRulesAsync(await ProcessAsync(Batch()), default));
+        using var gate = new SemaphoreSlim(1, 1);
+        using (var worker = CreateWorker(new StatusWebhook(HttpStatusCode.ServiceUnavailable), gate))
+        {
+            await worker.StartAsync(default);
+            try { await WaitForStatusAsync(id, AlertDeliveryStatus.Pending, minimumAttempts: 1); }
+            finally { await worker.StopAsync(default); }
+        }
+        Assert.Null(await Alerts.GetNextPendingAsync(Now.AddSeconds(1), default));
+        Assert.Equal(id, (await Alerts.GetNextPendingAsync(Now.AddSeconds(2), default))!.Id);
+        var client = new SuccessfulWebhook(null);
+        using var retry = CreateWorker(client, gate, now: Now.AddSeconds(2));
+        await retry.StartAsync(default);
+        try { await WaitForStatusAsync(id, AlertDeliveryStatus.Sent, minimumAttempts: 2); }
+        finally { await retry.StopAsync(default); }
+        Assert.Equal(1, client.Calls);
+        await using var db = await Factory.CreateDbContextAsync();
+        Assert.Equal(1, await db.Alerts.CountAsync());
+    }
+
+    private sealed class StatusWebhook(HttpStatusCode status) : IDiscordWebhookClient
+    {
+        public Task<DiscordWebhookResult> SendAsync(string content, CancellationToken cancellationToken) =>
+            Task.FromResult(new DiscordWebhookResult(status, null));
     }
 
     private DiscordAlertWorker CreateWorker(IDiscordWebhookClient client, SemaphoreSlim gate,

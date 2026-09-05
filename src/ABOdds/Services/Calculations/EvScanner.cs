@@ -37,11 +37,10 @@ public static class EvScanner
             .Where(value => value.Sources.Count > 0)
             .Where(value => value.Sources.All(
                 source => source.SourceUpdatedAtUtc >= asOfUtc - maximumSourceAge))
-            .GroupBy(value => new SelectionLineKey(
+            .ToDictionary(value => new SelectionLineKey(
                 value.MarketId,
                 OddsKey.NormalizeSelection(value.SelectionKey),
-                value.Line))
-            .ToDictionary(group => group.Key, group => group.ToList());
+                value.Line));
 
         var opportunities = new List<CalculatedEvOpportunity>();
 
@@ -56,52 +55,49 @@ public static class EvScanner
                 OddsKey.NormalizeSelection(quote.SelectionKey),
                 quote.Line);
 
-            if (!fairValuesBySelection.TryGetValue(key, out var matchingFairValues))
+            if (!fairValuesBySelection.TryGetValue(key, out var fairValue))
             {
                 continue;
             }
 
-            foreach (var fairValue in matchingFairValues)
+            var validator = fairValue.Sources.SingleOrDefault(source => source.Role == FairValueSourceRole.Validation);
+            if (validator is not null)
             {
-                var validator = fairValue.Sources.SingleOrDefault(source => source.Role == FairValueSourceRole.Validation);
-                if (validator is not null)
-                {
-                    var primary = fairValue.Sources.Single(source => source.Role == FairValueSourceRole.Primary);
-                    if (Math.Abs(primary.NoVigProbability - validator.NoVigProbability) * quote.DecimalOdds >
-                        options.MaximumReferenceEvDifference)
-                    {
-                        continue;
-                    }
-                }
-
-                var expectedValue = fairValue.FairProbability * quote.DecimalOdds - 1m;
-                if (expectedValue < options.MinimumExpectedValue)
+                var primary = fairValue.Sources.Single(source => source.Role == FairValueSourceRole.Primary);
+                if (Math.Abs(primary.NoVigProbability - validator.NoVigProbability) * quote.DecimalOdds >
+                    options.MaximumReferenceEvDifference)
                 {
                     continue;
                 }
-
-                opportunities.Add(new CalculatedEvOpportunity(
-                    fairValue.Id,
-                    quote.SnapshotId,
-                    quote.EventId,
-                    quote.MarketId,
-                    quote.ProviderEventId,
-                    quote.SportKey,
-                    quote.HomeTeam,
-                    quote.AwayTeam,
-                    quote.CommenceTimeUtc,
-                    quote.MarketKey,
-                    quote.BookmakerKey,
-                    quote.BookmakerTitle,
-                    quote.SelectionKey,
-                    quote.SelectionDisplayName,
-                    quote.Line,
-                    quote.DecimalOdds,
-                    fairValue.FairProbability,
-                    fairValue.FairDecimalOdds,
-                    expectedValue,
-                    fairValue.Sources));
             }
+
+            var expectedValue = fairValue.FairProbability * quote.DecimalOdds - 1m;
+            if (expectedValue < options.MinimumExpectedValue)
+            {
+                continue;
+            }
+
+            opportunities.Add(new CalculatedEvOpportunity(
+                fairValue.Id,
+                quote.SnapshotId,
+                quote.EventId,
+                quote.MarketId,
+                quote.ProviderEventId,
+                quote.SportKey,
+                quote.HomeTeam,
+                quote.AwayTeam,
+                quote.CommenceTimeUtc,
+                quote.MarketKey,
+                quote.BookmakerKey,
+                quote.BookmakerTitle,
+                quote.SelectionKey,
+                quote.SelectionDisplayName,
+                quote.Line,
+                quote.DecimalOdds,
+                fairValue.FairProbability,
+                fairValue.FairDecimalOdds,
+                expectedValue,
+                fairValue.Sources));
         }
 
         return opportunities

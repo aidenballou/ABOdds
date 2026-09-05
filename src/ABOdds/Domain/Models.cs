@@ -57,10 +57,7 @@ public sealed record MarketQuote(
     decimal DecimalOdds,
     decimal? Line,
     DateTimeOffset ObservedAtUtc,
-    DateTimeOffset SourceUpdatedAtUtc)
-{
-    public string LineKey => OddsKey.FormatLine(Line);
-}
+    DateTimeOffset SourceUpdatedAtUtc);
 
 public enum FairValueSourceRole
 {
@@ -101,10 +98,7 @@ public sealed record PersistedFairValue(
     decimal? Line,
     decimal FairProbability,
     decimal FairDecimalOdds,
-    IReadOnlyList<FairValueSource> Sources)
-{
-    public string LineKey => OddsKey.FormatLine(Line);
-}
+    IReadOnlyList<FairValueSource> Sources);
 
 public sealed record CalculatedEvOpportunity(
     Guid FairValueId,
@@ -128,7 +122,7 @@ public sealed record CalculatedEvOpportunity(
     decimal ExpectedValue,
     IReadOnlyList<FairValueSource> Sources)
 {
-    public string LineKey => OddsKey.FormatLine(Line);
+    public BetKey BetKey => new(EventId, MarketId, SelectionKey, OddsKey.FormatLine(Line), BookmakerKey);
 }
 
 public readonly record struct BetKey(

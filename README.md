@@ -4,7 +4,7 @@ ABOdds is one .NET worker application that polls pregame football odds, calculat
 
 There is no HTTP API, UI, message broker, bet placement, player-prop support, or CLV calculation in this version.
 
-The [readiness audit fixes](docs/readiness-audit-2026-09-04.md) pass 90 tests, including real PostgreSQL and application-host tests. The Docker image builds and starts with both integrations disabled. The next step is the bounded live smoke test below; account-specific book coverage and live delivery have not been verified. Both integrations remain disabled by default.
+The [code and test audit](docs/code-test-audit-2026-09-05.md) documents the cleanup and verification, including real PostgreSQL and application-host tests. The earlier [readiness audit](docs/readiness-audit-2026-09-04.md) records the deployment fixes. The Docker image builds and starts with both integrations disabled. The next step is the bounded live smoke test below; account-specific book coverage and live delivery have not been verified. Both integrations remain disabled by default.
 
 ## Pipeline
 

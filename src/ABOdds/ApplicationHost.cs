@@ -64,13 +64,11 @@ public static class ApplicationHost
         });
 
         builder.Services.AddSingleton<IClock, SystemClock>();
-        builder.Services.AddSingleton<IOddsNormalizer, OddsNormalizer>();
         builder.Services.AddSingleton<OddsPipeline>();
         builder.Services.AddSingleton(_ => new SemaphoreSlim(1, 1));
         builder.Services.AddSingleton<OddsIngestionRepository>();
         builder.Services.AddSingleton<CalculationRepository>();
         builder.Services.AddSingleton<AlertRepository>();
-        builder.Services.AddSingleton<AlertDecisionService>();
         builder.Services.AddSingleton(serviceProvider => new AdaptivePollingSchedule(
             serviceProvider.GetRequiredService<IOptions<PollingOptions>>().Value));
 
