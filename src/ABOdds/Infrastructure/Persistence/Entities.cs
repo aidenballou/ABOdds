@@ -4,6 +4,7 @@ namespace ABOdds.Infrastructure.Persistence;
 
 public sealed class PollBatchEntity
 {
+    public string? EventMetadataJson { get; set; }
     public Guid Id { get; set; }
     public string Provider { get; set; } = ABOdds.Domain.Providers.TheOddsApi;
     public string SportKey { get; set; } = string.Empty;
@@ -68,6 +69,7 @@ public sealed class OddsSnapshotEntity
 
 public sealed class FairValueEntity
 {
+    public string CalculationVersion { get; set; } = "legacy-unknown";
     public Guid Id { get; set; }
     public Guid PollBatchId { get; set; }
     public PollBatchEntity PollBatch { get; set; } = null!;
@@ -132,6 +134,7 @@ public sealed class AlertEntity
     public AlertDeliveryStatus DeliveryStatus { get; set; } = AlertDeliveryStatus.Pending;
     public int DeliveryAttempts { get; set; }
     public DateTimeOffset NextAttemptAtUtc { get; set; }
+    public DateTimeOffset? RateLimitedUntilUtc { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset? SentAtUtc { get; set; }
     public string? LastDeliveryError { get; set; }

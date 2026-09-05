@@ -9,7 +9,7 @@ public sealed record PendingAlert(
     Guid Id,
     string Message,
     int DeliveryAttempts,
-    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset ObservedAtUtc,
     DateTimeOffset CommenceTimeUtc,
     DateTimeOffset OldestSourceUpdatedAtUtc,
     bool StateIsActive,
@@ -26,7 +26,6 @@ public sealed class AlertRepository(
         CancellationToken cancellationToken)
     {
         await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         var batch = await dbContext.PollBatches.SingleAsync(
             value => value.Id == alertBatch.BatchId,
             cancellationToken);
@@ -44,12 +43,11 @@ public sealed class AlertRepository(
                 cancellationToken);
         if (newerBatchWasApplied)
         {
-            batch.AlertRulesCompletedAtUtc = alertBatch.ObservedAtUtc;
+            batch.AlertRulesCompletedAtUtc = alertBatch.ProcessedAtUtc;
             batch.LastFailedStage = null;
             batch.LastError = null;
             batch.LastFailedAtUtc = null;
             await dbContext.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
             return [];
         }
 
@@ -87,7 +85,9 @@ public sealed class AlertRepository(
                 ? null
                 : new AlertTrackingState(
                     key,
-                    state.IsActive,
+                    // A delivered baseline from an earlier appearance does not cover this one.
+                    state.IsActive && (state.LastDisappearedAtUtc is null ||
+                        state.LastAlertedAtUtc > state.LastDisappearedAtUtc),
                     state.LastSeenAtUtc,
                     state.LastSeenExpectedValue,
                     state.LastAlertedExpectedValue.Value);
@@ -131,17 +131,16 @@ public sealed class AlertRepository(
                 Reason = decision.Reason!.Value,
                 Message = DiscordAlertFormatter.Format(opportunity, alertBatch.ObservedAtUtc),
                 DeliveryStatus = AlertDeliveryStatus.Pending,
-                NextAttemptAtUtc = alertBatch.ObservedAtUtc,
-                CreatedAtUtc = alertBatch.ObservedAtUtc
+                NextAttemptAtUtc = alertBatch.ProcessedAtUtc,
+                CreatedAtUtc = alertBatch.ProcessedAtUtc
             });
         }
 
-        batch.AlertRulesCompletedAtUtc = alertBatch.ObservedAtUtc;
+        batch.AlertRulesCompletedAtUtc = alertBatch.ProcessedAtUtc;
         batch.LastFailedStage = null;
         batch.LastError = null;
         batch.LastFailedAtUtc = null;
         await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
         return createdAlertIds;
     }
 
@@ -150,6 +149,11 @@ public sealed class AlertRepository(
         CancellationToken cancellationToken)
     {
         await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
+        // V1 has one webhook. Its cooldown also covers new alerts and process restarts.
+        if (await dbContext.Alerts.AnyAsync(value => value.RateLimitedUntilUtc > now, cancellationToken))
+        {
+            return null;
+        }
         var pending = await dbContext.Alerts
             .AsNoTracking()
             .Where(value =>
@@ -162,7 +166,7 @@ public sealed class AlertRepository(
                 value.Id,
                 value.Message,
                 value.DeliveryAttempts,
-                value.CreatedAtUtc,
+                value.EvOpportunity.OddsSnapshot.ObservedAtUtc,
                 value.EvOpportunity.OddsSnapshot.Market.Event.CommenceTimeUtc,
                 TargetSourceUpdatedAtUtc = value.EvOpportunity.OddsSnapshot.SourceUpdatedAtUtc,
                 value.EvOpportunity.FairValue.SourcesJson,
@@ -187,7 +191,7 @@ public sealed class AlertRepository(
             pending.Id,
             pending.Message,
             pending.DeliveryAttempts,
-            pending.CreatedAtUtc,
+            pending.ObservedAtUtc,
             pending.CommenceTimeUtc,
             oldestSourceUpdatedAt,
             pending.StateIsActive,
@@ -212,12 +216,14 @@ public sealed class AlertRepository(
         Guid alertId,
         DateTimeOffset nextAttemptAtUtc,
         string error,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool rateLimited = false)
     {
         await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
         var alert = await dbContext.Alerts.SingleAsync(value => value.Id == alertId, cancellationToken);
         alert.DeliveryAttempts++;
         alert.NextAttemptAtUtc = nextAttemptAtUtc;
+        if (rateLimited) alert.RateLimitedUntilUtc = nextAttemptAtUtc;
         alert.LastDeliveryError = Truncate(error);
         await dbContext.SaveChangesAsync(cancellationToken);
     }
@@ -230,6 +236,7 @@ public sealed class AlertRepository(
         await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
         var alert = await dbContext.Alerts
             .Include(value => value.AlertState)
+            .Include(value => value.EvOpportunity).ThenInclude(value => value.OddsSnapshot)
             .SingleAsync(value => value.Id == alertId, cancellationToken);
         alert.DeliveryStatus = AlertDeliveryStatus.Failed;
         alert.DeliveryAttempts++;
@@ -246,6 +253,7 @@ public sealed class AlertRepository(
         await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
         var alert = await dbContext.Alerts
             .Include(value => value.AlertState)
+            .Include(value => value.EvOpportunity).ThenInclude(value => value.OddsSnapshot)
             .SingleAsync(value => value.Id == alertId, cancellationToken);
         alert.DeliveryStatus = AlertDeliveryStatus.Expired;
         alert.LastDeliveryError = Truncate(reason);
@@ -266,7 +274,7 @@ public sealed class AlertRepository(
         CancellationToken cancellationToken)
     {
         var state = alert.AlertState;
-        if (state.LastAlertedAtUtc != alert.CreatedAtUtc)
+        if (state.LastAlertedAtUtc != alert.EvOpportunity.OddsSnapshot.ObservedAtUtc)
         {
             return;
         }
@@ -280,13 +288,13 @@ public sealed class AlertRepository(
             .ThenByDescending(value => value.CreatedAtUtc)
             .Select(value => new
             {
-                value.CreatedAtUtc,
+                value.EvOpportunity.OddsSnapshot.ObservedAtUtc,
                 value.EvOpportunity.ExpectedValue,
                 value.EvOpportunity.OddsSnapshot.DecimalOdds
             })
             .FirstOrDefaultAsync(cancellationToken);
 
-        state.LastAlertedAtUtc = lastDelivered?.CreatedAtUtc;
+        state.LastAlertedAtUtc = lastDelivered?.ObservedAtUtc;
         state.LastAlertedExpectedValue = lastDelivered?.ExpectedValue;
         state.LastAlertedDecimalOdds = lastDelivered?.DecimalOdds;
     }

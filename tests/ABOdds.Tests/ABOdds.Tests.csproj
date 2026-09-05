@@ -22,5 +22,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/ABOdds/ABOdds.csproj" />
+    <None Include="../../src/ABOdds/appsettings.json" Link="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

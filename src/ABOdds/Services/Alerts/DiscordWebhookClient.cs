@@ -30,6 +30,7 @@ public sealed class DiscordWebhookClient : IDiscordWebhookClient
 
         _httpClient = httpClient;
         _options = options.Value;
+        _httpClient.Timeout = _options.RequestTimeout;
     }
 
     public async Task<DiscordWebhookResult> SendAsync(

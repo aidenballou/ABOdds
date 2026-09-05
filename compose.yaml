@@ -19,7 +19,7 @@ services:
   worker:
     build:
       context: .
-    restart: unless-stopped
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
@@ -29,6 +29,7 @@ services:
       OddsApi__ApiKey: ${ODDS_API_KEY:-}
       Discord__Enabled: ${DISCORD_ENABLED:-false}
       Discord__WebhookUrl: ${DISCORD_WEBHOOK_URL:-}
+      Polling__MaximumCreditsPerRun: ${MAXIMUM_CREDITS_PER_RUN:-}
 
 volumes:
   postgres-data:

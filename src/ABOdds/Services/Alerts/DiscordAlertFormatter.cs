@@ -10,8 +10,25 @@ public static class DiscordAlertFormatter
     {
         ArgumentNullException.ThrowIfNull(opportunity);
 
+        var conditional = opportunity.MarketKey == MarketKeys.Moneyline ||
+            opportunity.Line is { } line && line == decimal.Truncate(line);
+        var probabilityLabel = conditional ? "Fair Probability conditional on no push" : "Fair Probability";
+        var evLabel = conditional ? "EV conditional on no push" : "EV";
         var message = new StringBuilder();
         message.AppendLine("🟢 **+EV BET**");
+        message.AppendLine();
+        message.Append(opportunity.AwayTeam).Append(" @ ").AppendLine(opportunity.HomeTeam);
+        message.Append(opportunity.SportKey == "americanfootball_nfl" ? "NFL" : "NCAAF")
+            .Append(" | ").AppendLine(opportunity.MarketKey switch
+            {
+                MarketKeys.Moneyline => "Moneyline",
+                MarketKeys.Spread => "Spread",
+                MarketKeys.Total => "Total",
+                _ => opportunity.MarketKey
+            });
+        message.Append("Kickoff: <t:")
+            .Append(opportunity.CommenceTimeUtc.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture))
+            .AppendLine(":f>");
         message.AppendLine();
         message.Append("**").Append(FormatSelection(opportunity)).AppendLine("**");
         message.Append(opportunity.BookmakerTitle)
@@ -22,12 +39,13 @@ public static class DiscordAlertFormatter
         message.Append("Fair Odds: **")
             .Append(AmericanOdds.Format(opportunity.FairDecimalOdds))
             .AppendLine("**");
-        message.Append("Fair Probability: **")
+        message.Append(probabilityLabel).Append(": **")
             .Append(FormatPercentage(opportunity.FairProbability, includeSign: false))
             .AppendLine("**");
-        message.Append("EV: **")
+        message.Append(evLabel).Append(": **")
             .Append(FormatPercentage(opportunity.ExpectedValue, includeSign: true))
             .AppendLine("**");
+        if (conditional) message.AppendLine("Push probability is not estimated.");
         message.AppendLine();
         message.AppendLine("Sharp consensus:");
 

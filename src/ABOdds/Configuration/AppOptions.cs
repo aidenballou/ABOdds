@@ -20,6 +20,8 @@ public sealed class PollingOptions
     public TimeSpan NearEventInterval { get; init; } = TimeSpan.FromMinutes(1);
     public TimeSpan NearEventWindow { get; init; } = TimeSpan.FromHours(6);
     public TimeSpan MaximumSourceAge { get; init; } = TimeSpan.FromSeconds(90);
+    public bool RunOnce { get; init; }
+    public int? MaximumCreditsPerRun { get; init; }
 }
 
 public sealed class FairValueOptions
@@ -61,11 +63,5 @@ public sealed class DiscordOptions
     public string Username { get; init; } = "ABOdds";
     public TimeSpan OutboxPollInterval { get; init; } = TimeSpan.FromSeconds(2);
     public TimeSpan MaximumRetryDelay { get; init; } = TimeSpan.FromMinutes(5);
-}
-
-public sealed class PipelineOptions
-{
-    public const string SectionName = "Pipeline";
-
-    public int ChannelCapacity { get; init; } = 100;
+    public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(10);
 }

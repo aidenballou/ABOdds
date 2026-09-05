@@ -3,6 +3,7 @@ using System;
 using ABOdds.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ABOdds.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(BettingDbContext))]
-    partial class BettingDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260905035118_PersistDiscordCooldown")]
+    partial class PersistDiscordCooldown
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -240,13 +243,6 @@ namespace ABOdds.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("CalculatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("CalculationVersion")
-                        .IsRequired()
-                        .ValueGeneratedOnAdd()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasDefaultValue("legacy-unknown");
-
                     b.Property<decimal>("FairDecimalOdds")
                         .HasPrecision(20, 10)
                         .HasColumnType("numeric(20,10)");
@@ -396,9 +392,6 @@ namespace ABOdds.Infrastructure.Persistence.Migrations
 
                     b.Property<DateTimeOffset?>("EvCompletedAtUtc")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("EventMetadataJson")
-                        .HasColumnType("jsonb");
 
                     b.Property<DateTimeOffset?>("FairValueCompletedAtUtc")
                         .HasColumnType("timestamp with time zone");

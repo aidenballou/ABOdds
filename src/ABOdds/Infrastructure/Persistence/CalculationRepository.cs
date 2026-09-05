@@ -1,5 +1,6 @@
 using System.Text.Json;
 using ABOdds.Domain;
+using ABOdds.Services.Calculations;
 using Microsoft.EntityFrameworkCore;
 
 namespace ABOdds.Infrastructure.Persistence;
@@ -14,26 +15,24 @@ public sealed record AlertBatchData(
     Guid BatchId,
     string SportKey,
     DateTimeOffset ObservedAtUtc,
-    IReadOnlyList<(Guid OpportunityId, CalculatedEvOpportunity Opportunity)> Opportunities);
+    IReadOnlyList<(Guid OpportunityId, CalculatedEvOpportunity Opportunity)> Opportunities)
+{
+    public DateTimeOffset ProcessedAtUtc { get; init; } = ObservedAtUtc;
+}
 
 public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> contextFactory)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public Task<Guid?> GetNextFairValueBatchAsync(CancellationToken cancellationToken) =>
-        GetNextBatchAsync(
-            value => value.FairValueCompletedAtUtc == null,
-            cancellationToken);
-
-    public Task<Guid?> GetNextEvBatchAsync(CancellationToken cancellationToken) =>
-        GetNextBatchAsync(
-            value => value.FairValueCompletedAtUtc != null && value.EvCompletedAtUtc == null,
-            cancellationToken);
-
-    public Task<Guid?> GetNextAlertBatchAsync(CancellationToken cancellationToken) =>
-        GetNextBatchAsync(
-            value => value.EvCompletedAtUtc != null && value.AlertRulesCompletedAtUtc == null,
-            cancellationToken);
+    public async Task<Guid?> GetNextPendingBatchAsync(CancellationToken cancellationToken)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        return await db.PollBatches.AsNoTracking()
+            .Where(value => value.AlertRulesCompletedAtUtc == null)
+            .OrderBy(value => value.ObservedAtUtc)
+            .Select(value => (Guid?)value.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
 
     public async Task<BatchQuotes?> LoadBatchQuotesAsync(Guid batchId, CancellationToken cancellationToken)
     {
@@ -70,7 +69,11 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
                 value.SourceUpdatedAtUtc))
             .ToListAsync(cancellationToken);
 
-        return new BatchQuotes(batch.Id, batch.SportKey, batch.ObservedAtUtc, quotes);
+        var metadata = ReadEventMetadata(batch);
+        var observedQuotes = quotes.Select(quote => metadata.TryGetValue(quote.ProviderEventId, out var game)
+            ? quote with { SportKey = game.SportKey, HomeTeam = game.HomeTeam, AwayTeam = game.AwayTeam, CommenceTimeUtc = game.CommenceTimeUtc }
+            : quote).ToArray();
+        return new BatchQuotes(batch.Id, batch.SportKey, batch.ObservedAtUtc, observedQuotes);
     }
 
     public async Task<bool> SaveFairValuesAsync(
@@ -80,7 +83,6 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         CancellationToken cancellationToken)
     {
         await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         var batch = await dbContext.PollBatches.SingleAsync(value => value.Id == batchId, cancellationToken);
         if (batch.FairValueCompletedAtUtc is not null)
         {
@@ -104,6 +106,7 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
                 FairDecimalOdds = fairValue.FairDecimalOdds,
                 ReferenceBookCount = fairValue.Sources.Count,
                 SourcesJson = JsonSerializer.Serialize(fairValue.Sources, JsonOptions),
+                CalculationVersion = FairValueCalculator.Version,
                 CalculatedAtUtc = calculatedAtUtc
             });
         }
@@ -111,7 +114,6 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         batch.FairValueCompletedAtUtc = calculatedAtUtc;
         ClearFailure(batch);
         await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
         return true;
     }
 
@@ -144,7 +146,6 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         CancellationToken cancellationToken)
     {
         await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
         var batch = await dbContext.PollBatches.SingleAsync(value => value.Id == batchId, cancellationToken);
         if (batch.EvCompletedAtUtc is not null)
         {
@@ -169,7 +170,6 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         batch.EvCompletedAtUtc = detectedAtUtc;
         ClearFailure(batch);
         await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
         return true;
     }
 
@@ -193,6 +193,7 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
             .Include(value => value.FairValue)
             .ToListAsync(cancellationToken);
 
+        var metadata = ReadEventMetadata(batch);
         var opportunities = entities.Select(value =>
         {
             var quote = value.OddsSnapshot;
@@ -219,6 +220,11 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
                 fairValue.FairDecimalOdds,
                 value.ExpectedValue,
                 DeserializeSources(fairValue.SourcesJson));
+            if (metadata.TryGetValue(opportunity.ProviderEventId, out var game))
+            {
+                opportunity = opportunity with { SportKey = game.SportKey, HomeTeam = game.HomeTeam,
+                    AwayTeam = game.AwayTeam, CommenceTimeUtc = game.CommenceTimeUtc };
+            }
             return (value.Id, opportunity);
         }).ToArray();
 
@@ -245,23 +251,14 @@ public sealed class CalculationRepository(IDbContextFactory<BettingDbContext> co
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
-    private async Task<Guid?> GetNextBatchAsync(
-        System.Linq.Expressions.Expression<Func<PollBatchEntity, bool>> predicate,
-        CancellationToken cancellationToken)
-    {
-        await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
-        return await dbContext.PollBatches
-            .AsNoTracking()
-            .Where(predicate)
-            .OrderBy(value => value.LastFailedAtUtc.HasValue)
-            .ThenBy(value => value.LastFailedAtUtc)
-            .ThenBy(value => value.ObservedAtUtc)
-            .Select(value => (Guid?)value.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-    }
-
     private static IReadOnlyList<FairValueSource> DeserializeSources(string json) =>
         JsonSerializer.Deserialize<IReadOnlyList<FairValueSource>>(json, JsonOptions) ?? [];
+
+    private static Dictionary<string, ObservedEventMetadata> ReadEventMetadata(PollBatchEntity batch) =>
+        batch.EventMetadataJson is null
+            ? [] // Legacy snapshots lack observation-time event metadata; do not invent it.
+            : (JsonSerializer.Deserialize<ObservedEventMetadata[]>(batch.EventMetadataJson) ?? [])
+                .ToDictionary(game => game.ProviderEventId, StringComparer.Ordinal);
 
     private static void ClearFailure(PollBatchEntity batch)
     {

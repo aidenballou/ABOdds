@@ -5,6 +5,44 @@ namespace ABOdds.Tests.Alerts;
 
 public sealed class DiscordAlertFormatterTests
 {
+    [Theory]
+    [InlineData("spreads", 3)]
+    [InlineData("spreads", -3)]
+    [InlineData("spreads", 0)]
+    [InlineData("totals", 44)]
+    [InlineData("h2h", 0)]
+    public void Format_PushCapableMarket_LabelsConditionalEvAndProbability(string market, int line)
+    {
+        var opportunity = TestOpportunity.Create(marketKey: market, line: market == "h2h" ? null : line);
+        var message = DiscordAlertFormatter.Format(opportunity, opportunity.CommenceTimeUtc.AddMinutes(-5));
+        Assert.Contains("EV conditional on no push: **+7.4%**", message, StringComparison.Ordinal);
+        Assert.Contains("Fair Probability conditional on no push: **55.0%**", message, StringComparison.Ordinal);
+        Assert.Contains("Push probability is not estimated.", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Format_TotalsFromDifferentGames_IdentifiesEachMatchupAndKickoff()
+    {
+        var first = TestOpportunity.Create(line: 44.5m, marketKey: MarketKeys.Total) with
+        {
+            SelectionKey = "over", SelectionDisplayName = "Over"
+        };
+        var second = first with
+        {
+            SportKey = "americanfootball_ncaaf", HomeTeam = "Purdue", AwayTeam = "Indiana",
+            CommenceTimeUtc = first.CommenceTimeUtc.AddHours(1)
+        };
+        var firstMessage = DiscordAlertFormatter.Format(first, first.CommenceTimeUtc.AddMinutes(-5));
+        var secondMessage = DiscordAlertFormatter.Format(second, second.CommenceTimeUtc.AddMinutes(-5));
+        Assert.Contains("Indianapolis Colts @ Houston Texans", firstMessage, StringComparison.Ordinal);
+        Assert.Contains("NFL | Total", firstMessage, StringComparison.Ordinal);
+        Assert.Contains("Indiana @ Purdue", secondMessage, StringComparison.Ordinal);
+        Assert.Contains("NCAAF | Total", secondMessage, StringComparison.Ordinal);
+        Assert.Contains($"Kickoff: <t:{second.CommenceTimeUtc.ToUnixTimeSeconds()}:f>", secondMessage, StringComparison.Ordinal);
+        Assert.Contains("**Over 44.5**", firstMessage, StringComparison.Ordinal);
+        Assert.NotEqual(firstMessage, secondMessage);
+    }
+
     [Fact]
     public void Format_SpreadOpportunity_IncludesBetDetailsSourcesAndNativeTimestamp()
     {

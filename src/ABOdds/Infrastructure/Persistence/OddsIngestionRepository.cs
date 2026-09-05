@@ -1,4 +1,5 @@
 using ABOdds.Domain;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 
 namespace ABOdds.Infrastructure.Persistence;
@@ -8,11 +9,14 @@ public sealed class OddsIngestionRepository(IDbContextFactory<BettingDbContext> 
     public async Task<Guid> SaveAsync(NormalizedOddsBatch normalizedBatch, CancellationToken cancellationToken)
     {
         await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        if (await dbContext.PollBatches.AnyAsync(value => value.Id == normalizedBatch.Id, cancellationToken))
+        {
+            return normalizedBatch.Id;
+        }
 
         var batch = new PollBatchEntity
         {
-            Id = Guid.NewGuid(),
+            Id = normalizedBatch.Id,
             SportKey = normalizedBatch.SportKey,
             ObservedAtUtc = normalizedBatch.ObservedAtUtc,
             QuotaRemaining = normalizedBatch.Quota.Remaining,
@@ -25,6 +29,8 @@ public sealed class OddsIngestionRepository(IDbContextFactory<BettingDbContext> 
             .GroupBy(value => value.ProviderEventId, StringComparer.Ordinal)
             .Select(group => group.Last())
             .ToArray();
+        batch.EventMetadataJson = JsonSerializer.Serialize(normalizedEvents.Select(game => new ObservedEventMetadata(
+            game.ProviderEventId, game.SportKey, game.HomeTeam, game.AwayTeam, game.CommenceTimeUtc)));
         var providerEventIds = normalizedEvents.Select(value => value.ProviderEventId).ToArray();
         var existingEvents = await dbContext.Events
             .Where(value => value.Provider == ABOdds.Domain.Providers.TheOddsApi && providerEventIds.Contains(value.ProviderEventId))
@@ -114,7 +120,6 @@ public sealed class OddsIngestionRepository(IDbContextFactory<BettingDbContext> 
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
         return batch.Id;
     }
 }

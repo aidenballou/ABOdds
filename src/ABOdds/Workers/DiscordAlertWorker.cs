@@ -1,6 +1,5 @@
 using ABOdds.Configuration;
 using ABOdds.Infrastructure.Persistence;
-using ABOdds.Pipeline;
 using ABOdds.Services.Alerts;
 using ABOdds.Time;
 using Microsoft.Extensions.Options;
@@ -10,7 +9,6 @@ namespace ABOdds.Workers;
 public sealed class DiscordAlertWorker(
     AlertRepository alertRepository,
     IDiscordWebhookClient discordClient,
-    PipelineChannels channels,
     IOptions<DiscordOptions> discordOptions,
     IOptions<PollingOptions> pollingOptions,
     SemaphoreSlim alertStateGate,
@@ -71,17 +69,17 @@ public sealed class DiscordAlertWorker(
                 try
                 {
                     alert = await alertRepository.GetNextPendingAsync(clock.UtcNow, stoppingToken);
-                    if (alert is not null)
-                    {
-                        await DeliverAsync(alert, stoppingToken);
-                    }
                 }
                 finally
                 {
                     alertStateGate.Release();
                 }
 
-                if (alert is null)
+                if (alert is not null)
+                {
+                    await DeliverAsync(alert, stoppingToken);
+                }
+                else
                 {
                     await WaitForWorkAsync(stoppingToken);
                 }
@@ -106,33 +104,52 @@ public sealed class DiscordAlertWorker(
         {
             expirationReason = "the event has started";
         }
-        else if (!alert.StateIsActive || alert.StateLastSeenAtUtc > alert.CreatedAtUtc)
+        else if (!alert.StateIsActive || alert.StateLastSeenAtUtc > alert.ObservedAtUtc)
         {
             expirationReason = "a newer market snapshot replaced it";
         }
-        else if (alert.OldestSourceUpdatedAtUtc < now - _maximumSourceAge)
+        else if (alert.OldestSourceUpdatedAtUtc <= now - _maximumSourceAge)
         {
             expirationReason = "the source odds are stale";
         }
 
         if (expirationReason is not null)
         {
-            await alertRepository.MarkExpiredAsync(alert.Id, expirationReason, cancellationToken);
+            await UpdateStateAsync(() => alertRepository.MarkExpiredAsync(alert.Id, expirationReason, cancellationToken), cancellationToken);
             LogExpired(logger, alert.Id, expirationReason, null);
             return;
         }
 
         try
         {
-            var result = await discordClient.SendAsync(alert.Message, cancellationToken);
+            var remainingValidity = GetDeadline(alert) - clock.UtcNow;
+            if (remainingValidity <= TimeSpan.Zero)
+            {
+                await UpdateStateAsync(() => alertRepository.MarkExpiredAsync(alert.Id, "the delivery deadline passed", cancellationToken), cancellationToken);
+                return;
+            }
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            attempt.CancelAfter(remainingValidity < _options.RequestTimeout ? remainingValidity : _options.RequestTimeout);
+            var result = await discordClient.SendAsync(alert.Message, attempt.Token);
             if (result.IsSuccess)
             {
-                await alertRepository.MarkSentAsync(alert.Id, clock.UtcNow, cancellationToken);
+                await UpdateStateAsync(() => alertRepository.MarkSentAsync(alert.Id, clock.UtcNow, cancellationToken), cancellationToken);
                 LogSent(logger, alert.Id, null);
                 return;
             }
 
-            if (result.IsRateLimited || (int)result.StatusCode >= 500)
+            if (result.IsRateLimited)
+            {
+                var delay = result.RetryAfter ?? GetExponentialRetryDelay(alert.DeliveryAttempts);
+                var until = clock.UtcNow + (delay < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : delay);
+                const string reason = "Discord returned HTTP 429.";
+                await UpdateStateAsync(() => alertRepository.ScheduleRetryAsync(
+                    alert.Id, until, reason, cancellationToken, rateLimited: true), cancellationToken);
+                LogRetry(logger, alert.Id, until, reason, null);
+                return;
+            }
+
+            if ((int)result.StatusCode >= 500)
             {
                 var reason = $"Discord returned HTTP {(int)result.StatusCode}.";
                 await RetryAsync(alert, result.RetryAfter, reason, cancellationToken);
@@ -140,7 +157,7 @@ public sealed class DiscordAlertWorker(
             }
 
             var permanentReason = $"Discord returned HTTP {(int)result.StatusCode}.";
-            await alertRepository.MarkFailedAsync(alert.Id, permanentReason, cancellationToken);
+            await UpdateStateAsync(() => alertRepository.MarkFailedAsync(alert.Id, permanentReason, cancellationToken), cancellationToken);
             LogPermanentFailure(logger, alert.Id, permanentReason, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -167,19 +184,29 @@ public sealed class DiscordAlertWorker(
 
         var now = clock.UtcNow;
         var nextAttempt = now + retryDelay;
-        var sourceExpiration = alert.OldestSourceUpdatedAtUtc + _maximumSourceAge;
-        if (sourceExpiration < nextAttempt)
+        if (nextAttempt >= GetDeadline(alert))
         {
-            nextAttempt = sourceExpiration;
+            const string expired = "a retry cannot complete before the odds expire or kickoff";
+            await UpdateStateAsync(() => alertRepository.MarkExpiredAsync(alert.Id, expired, cancellationToken), cancellationToken);
+            LogExpired(logger, alert.Id, expired, null);
+            return;
         }
 
-        if (alert.CommenceTimeUtc < nextAttempt)
-        {
-            nextAttempt = alert.CommenceTimeUtc;
-        }
-
-        await alertRepository.ScheduleRetryAsync(alert.Id, nextAttempt, reason, cancellationToken);
+        await UpdateStateAsync(() => alertRepository.ScheduleRetryAsync(alert.Id, nextAttempt, reason, cancellationToken), cancellationToken);
         LogRetry(logger, alert.Id, nextAttempt, reason, null);
+    }
+
+    private DateTimeOffset GetDeadline(PendingAlert alert)
+    {
+        var sourceExpiration = alert.OldestSourceUpdatedAtUtc + _maximumSourceAge;
+        return sourceExpiration < alert.CommenceTimeUtc ? sourceExpiration : alert.CommenceTimeUtc;
+    }
+
+    private async Task UpdateStateAsync(Func<Task> update, CancellationToken cancellationToken)
+    {
+        await alertStateGate.WaitAsync(cancellationToken);
+        try { await update(); }
+        finally { alertStateGate.Release(); }
     }
 
     private TimeSpan GetExponentialRetryDelay(int priorAttempts)
@@ -191,23 +218,7 @@ public sealed class DiscordAlertWorker(
 
     private async Task WaitForWorkAsync(CancellationToken stoppingToken)
     {
-        if (channels.AlertOutbox.Reader.TryRead(out _))
-        {
-            return;
-        }
-
-        using var waitCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        waitCancellation.CancelAfter(_options.OutboxPollInterval);
-        try
-        {
-            if (await channels.AlertOutbox.Reader.WaitToReadAsync(waitCancellation.Token))
-            {
-                channels.AlertOutbox.Reader.TryRead(out _);
-            }
-        }
-        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
-        {
-        }
+        await Task.Delay(_options.OutboxPollInterval, stoppingToken);
     }
 
     private static async Task WaitUntilStoppedAsync(CancellationToken stoppingToken)

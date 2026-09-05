@@ -10,6 +10,10 @@ namespace ABOdds.Providers;
 
 public sealed class TheOddsApiClient : IOddsProvider
 {
+    private static readonly Action<ILogger, int, int, int, Exception?> LogQuota = LoggerMessage.Define<int, int, int>(
+        LogLevel.Information, new EventId(2100, nameof(LogQuota)),
+        "Odds API response: credits remaining {Remaining}, used {Used}, request cost {Cost}");
+    private readonly ILogger<TheOddsApiClient> _logger;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
     private readonly HttpClient _httpClient;
@@ -19,6 +23,7 @@ public sealed class TheOddsApiClient : IOddsProvider
     private readonly string _apiKey;
     private readonly string[] _markets;
     private readonly string[] _bookmakers;
+    public int EstimatedRequestCost => _markets.Length * ((_bookmakers.Length + 9) / 10);
 
     public TheOddsApiClient(
         HttpClient httpClient,
@@ -26,7 +31,8 @@ public sealed class TheOddsApiClient : IOddsProvider
         IOptions<FairValueOptions> fairValueOptions,
         IOptions<EvOptions> evOptions,
         IClock clock,
-        IOddsNormalizer normalizer)
+        IOddsNormalizer normalizer,
+        ILogger<TheOddsApiClient> logger)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(oddsApiOptions);
@@ -39,6 +45,7 @@ public sealed class TheOddsApiClient : IOddsProvider
         _httpClient = httpClient;
         _clock = clock;
         _normalizer = normalizer;
+        _logger = logger;
         _baseUri = CreateBaseUri(options.BaseUrl);
         _apiKey = options.ApiKey;
         _markets = GetMarkets(options.Markets);
@@ -68,21 +75,23 @@ public sealed class TheOddsApiClient : IOddsProvider
             throw new InvalidOperationException("At least one reference or target bookmaker is required.");
         }
 
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        request.CancelAfter(_httpClient.Timeout);
         using var response = await _httpClient.GetAsync(
             CreateRequestUri(sportKey),
             HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
-
-        response.EnsureSuccessStatusCode();
-
-        var sourceEvents = await response.Content.ReadFromJsonAsync<List<TheOddsApiEventDto>>(
-            SerializerOptions,
-            cancellationToken) ?? [];
+            request.Token);
 
         var quota = new ApiQuotaSnapshot(
             ReadIntHeader(response, "x-requests-remaining"),
             ReadIntHeader(response, "x-requests-used"),
             ReadIntHeader(response, "x-requests-last"));
+        LogQuota(_logger, quota.Remaining ?? -1, quota.Used ?? -1, quota.LastRequestCost ?? -1, null);
+        response.EnsureSuccessStatusCode();
+
+        var sourceEvents = await response.Content.ReadFromJsonAsync<List<TheOddsApiEventDto>>(
+            SerializerOptions,
+            request.Token) ?? [];
 
         return _normalizer.Normalize(sportKey, _clock.UtcNow, sourceEvents, quota);
     }
@@ -93,6 +102,7 @@ public sealed class TheOddsApiClient : IOddsProvider
             $"apiKey={Uri.EscapeDataString(_apiKey)}",
             $"markets={Uri.EscapeDataString(string.Join(',', _markets))}",
             $"bookmakers={Uri.EscapeDataString(string.Join(',', _bookmakers))}",
+            $"commenceTimeFrom={Uri.EscapeDataString(_clock.UtcNow.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture))}",
             "oddsFormat=decimal",
             "dateFormat=iso");
 

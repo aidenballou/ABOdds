@@ -8,96 +8,99 @@ using Microsoft.Extensions.Options;
 
 namespace ABOdds.Workers;
 
-public sealed class OddsPollingWorker(
-    IOddsProvider oddsProvider,
-    OddsIngestionRepository ingestionRepository,
-    PipelineChannels channels,
-    AdaptivePollingSchedule pollingSchedule,
-    IOptions<OddsApiOptions> oddsApiOptions,
+public sealed partial class OddsPollingWorker(
+    IOddsProvider provider,
+    OddsIngestionRepository ingestion,
+    OddsPipeline pipeline,
+    AdaptivePollingSchedule schedule,
+    IOptions<OddsApiOptions> oddsApi,
+    IOptions<PollingOptions> polling,
+    IHostApplicationLifetime lifetime,
     IClock clock,
     ILogger<OddsPollingWorker> logger) : BackgroundService
 {
-    private static readonly Action<ILogger, Exception?> LogDisabled = LoggerMessage.Define(
-        LogLevel.Warning,
-        new EventId(2001, nameof(LogDisabled)),
-        "Odds polling is disabled; set OddsApi:Enabled to true to ingest live data");
-
-    private static readonly Action<ILogger, string, Exception?> LogPollFailure =
-        LoggerMessage.Define<string>(
-            LogLevel.Error,
-            new EventId(2002, nameof(LogPollFailure)),
-            "Odds poll failed for {SportKey}");
-
-    private static readonly Action<ILogger, int, string, int, int, Exception?> LogPollComplete =
-        LoggerMessage.Define<int, string, int, int>(
-            LogLevel.Information,
-            new EventId(2003, nameof(LogPollComplete)),
-            "Stored {EventCount} pregame events for {SportKey}; quota remaining {QuotaRemaining}, request cost {RequestCost}");
-
-    private static readonly Action<ILogger, double, Exception?> LogNextPoll =
-        LoggerMessage.Define<double>(
-            LogLevel.Information,
-            new EventId(2004, nameof(LogNextPoll)),
-            "Next odds poll in {DelaySeconds} seconds");
-
-    private readonly OddsApiOptions _options = oddsApiOptions.Value;
-    private readonly Dictionary<string, IReadOnlyList<DateTimeOffset>> _knownCommenceTimes =
-        new(StringComparer.Ordinal);
+    public int ExitCode { get; private set; }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_options.Enabled)
+        if (!oddsApi.Value.Enabled)
         {
-            LogDisabled(logger, null);
-            await WaitUntilStoppedAsync(stoppingToken);
+            LogDisabled(logger);
             return;
         }
 
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            foreach (var sportKey in _options.Sports)
-            {
-                try
-                {
-                    var batch = await oddsProvider.GetOddsAsync(sportKey, stoppingToken);
-                    var batchId = await ingestionRepository.SaveAsync(batch, stoppingToken);
-                    _knownCommenceTimes[sportKey] = batch.Events
-                        .Select(value => value.CommenceTimeUtc)
-                        .ToArray();
-                    await channels.FairValueBatches.Writer.WriteAsync(batchId, stoppingToken);
-                    LogPollComplete(
-                        logger,
-                        batch.Events.Count,
-                        sportKey,
-                        batch.Quota.Remaining ?? -1,
-                        batch.Quota.LastRequestCost ?? -1,
-                        null);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception exception)
-                {
-                    LogPollFailure(logger, sportKey, exception);
-                }
-            }
-
-            var now = clock.UtcNow;
-            var nextDelay = pollingSchedule.GetDelay(now, _knownCommenceTimes.Values.SelectMany(value => value));
-            LogNextPoll(logger, nextDelay.TotalSeconds, null);
-            await Task.Delay(nextDelay, stoppingToken);
-        }
-    }
-
-    private static async Task WaitUntilStoppedAsync(CancellationToken stoppingToken)
-    {
+        var sports = oddsApi.Value.Sports;
+        var spent = 0;
+        int? remaining = null;
+        LogPlan(logger, polling.Value.RunOnce ? sports.Count : -1, provider.EstimatedRequestCost,
+            polling.Value.MaximumCreditsPerRun);
         try
         {
-            await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken);
+            // Finish already-paid work before making another paid request, including after restart.
+            await pipeline.ProcessPendingAsync(stoppingToken);
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                foreach (var sport in sports)
+                {
+                    if (!schedule.IsDue(sport, clock.UtcNow)) continue;
+                    var cost = provider.EstimatedRequestCost;
+                    if (polling.Value.MaximumCreditsPerRun is { } maximum && spent + cost > maximum ||
+                        remaining is { } quota && quota < cost)
+                    {
+                        LogBudgetStop(logger, spent, remaining);
+                        lifetime.StopApplication();
+                        return;
+                    }
+
+                    var batch = await provider.GetOddsAsync(sport, stoppingToken);
+                    spent += batch.Quota.LastRequestCost ?? cost;
+                    remaining = batch.Quota.Remaining;
+                    var id = await ingestion.SaveAsync(batch, stoppingToken);
+                    await pipeline.ProcessAsync(id, stoppingToken);
+                    if (logger.IsEnabled(LogLevel.Information))
+                    {
+                        var quoteCount = batch.Events.Sum(game => game.Quotes.Count);
+                        LogProcessed(logger, id, sport, quoteCount, spent);
+                    }
+                    if (remaining is null || batch.Quota.LastRequestCost is null)
+                    {
+                        throw new InvalidOperationException("Odds API quota headers are missing; further paid requests are stopped.");
+                    }
+                    schedule.RecordPoll(sport, clock.UtcNow, batch.Events.Select(game => game.CommenceTimeUtc));
+                }
+
+                if (polling.Value.RunOnce)
+                {
+                    lifetime.StopApplication();
+                    return;
+                }
+                await Task.Delay(schedule.GetNextDelay(clock.UtcNow, sports), stoppingToken);
+            }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
+            // Normal host shutdown.
+        }
+        catch (Exception exception)
+        {
+            ExitCode = 1;
+            LogStopped(logger, exception);
+            lifetime.StopApplication();
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Odds polling is disabled")]
+    private static partial void LogDisabled(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Odds polling plan: maximum requests {MaximumRequests} (-1 means continuous), estimated credits per request {Cost}, per-run credit cap {Cap}")]
+    private static partial void LogPlan(ILogger logger, int maximumRequests, int cost, int? cap);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Stopping before another paid request: credits used this run {Spent}, provider credits remaining {Remaining}")]
+    private static partial void LogBudgetStop(ILogger logger, int spent, int? remaining);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Processed batch {BatchId} for {Sport}: {Quotes} quotes, credits used this run {Spent}")]
+    private static partial void LogProcessed(ILogger logger, Guid batchId, string sport, int quotes, int spent);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Polling stopped after a provider or processing failure; no more paid requests will be made. Fix the cause before restarting")]
+    private static partial void LogStopped(ILogger logger, Exception exception);
 }

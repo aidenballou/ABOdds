@@ -5,6 +5,7 @@ namespace ABOdds.Services.Calculations;
 
 public static class FairValueCalculator
 {
+    public const string Version = "proportional-devig-v1";
     public static IReadOnlyList<CalculatedFairValue> Calculate(
         IEnumerable<MarketQuote> quotes,
         DateTimeOffset asOfUtc,

@@ -5,6 +5,10 @@ namespace ABOdds.Infrastructure.Persistence;
 
 public sealed class BettingDbContext(DbContextOptions<BettingDbContext> options) : DbContext(options)
 {
+    public static void ConfigurePostgres(DbContextOptionsBuilder options, string connectionString) =>
+        options.UseNpgsql(connectionString, postgres =>
+            postgres.EnableRetryOnFailure(5, TimeSpan.FromSeconds(5), null));
+
     public DbSet<PollBatchEntity> PollBatches => Set<PollBatchEntity>();
     public DbSet<EventEntity> Events => Set<EventEntity>();
     public DbSet<MarketEntity> Markets => Set<MarketEntity>();
@@ -19,6 +23,7 @@ public sealed class BettingDbContext(DbContextOptions<BettingDbContext> options)
         modelBuilder.Entity<PollBatchEntity>(entity =>
         {
             entity.ToTable("poll_batches");
+            entity.Property(value => value.EventMetadataJson).HasColumnType("jsonb");
             entity.HasKey(value => value.Id);
             entity.Property(value => value.Provider).HasMaxLength(32);
             entity.Property(value => value.SportKey).HasMaxLength(64);
@@ -87,6 +92,7 @@ public sealed class BettingDbContext(DbContextOptions<BettingDbContext> options)
         modelBuilder.Entity<FairValueEntity>(entity =>
         {
             entity.ToTable("fair_values");
+            entity.Property(value => value.CalculationVersion).HasMaxLength(64).HasDefaultValue("legacy-unknown");
             entity.HasKey(value => value.Id);
             entity.Property(value => value.SelectionKey).HasMaxLength(200);
             entity.Property(value => value.SelectionDisplayName).HasMaxLength(200);
@@ -170,6 +176,8 @@ public sealed class BettingDbContext(DbContextOptions<BettingDbContext> options)
             entity.Property(value => value.Reason).HasConversion<string>().HasMaxLength(32);
             entity.Property(value => value.DeliveryStatus).HasConversion<string>().HasMaxLength(32);
             entity.HasIndex(value => new { value.DeliveryStatus, value.NextAttemptAtUtc });
+            entity.HasIndex(value => value.RateLimitedUntilUtc)
+                .HasFilter("\"RateLimitedUntilUtc\" IS NOT NULL");
             entity.HasOne(value => value.AlertState)
                 .WithMany(value => value.Alerts)
                 .HasForeignKey(value => value.AlertStateId)

@@ -5,11 +5,43 @@ using ABOdds.Domain;
 using ABOdds.Providers;
 using ABOdds.Time;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 
 namespace ABOdds.Tests.Providers;
 
 public sealed class TheOddsApiClientTests
 {
+    [Fact]
+    public async Task ResponseBodyThatStalls_IsCancelledByRequestTimeout()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var http = new HttpClient(new StalledBodyHandler());
+        var client = new TheOddsApiClient(http,
+            Options.Create(new OddsApiOptions { ApiKey = "synthetic", Markets = ["h2h"], RequestTimeout = TimeSpan.FromMilliseconds(50) }),
+            CreateFairValueOptions(), CreateEvOptions(), new FixedClock(Now), new OddsNormalizer(), NullLogger<TheOddsApiClient>.Instance);
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                client.GetOddsAsync("americanfootball_nfl", cancellation.Token).WaitAsync(TimeSpan.FromSeconds(1)));
+            Assert.False(cancellation.IsCancellationRequested);
+        }
+        finally { await cancellation.CancelAsync(); }
+    }
+
+    [Fact]
+    public async Task MalformedResponse_LogsQuotaBeforeDeserializationWithoutApiKey()
+    {
+        var logger = new RecordingLogger();
+        using var http = new HttpClient(new RecordingHandler("not-json"));
+        var client = new TheOddsApiClient(http,
+            Options.Create(new OddsApiOptions { ApiKey = "do-not-log-this-key", Markets = ["h2h"] }),
+            CreateFairValueOptions(), CreateEvOptions(), new FixedClock(Now), new OddsNormalizer(), logger);
+        await Assert.ThrowsAsync<System.Text.Json.JsonException>(() => client.GetOddsAsync("americanfootball_nfl"));
+        Assert.Contains("credits remaining 997", Assert.Single(logger.Messages), StringComparison.Ordinal);
+        Assert.DoesNotContain("do-not-log-this-key", logger.Messages.Single(), StringComparison.Ordinal);
+    }
+
     private static readonly DateTimeOffset Now =
         new(2026, 9, 3, 22, 15, 0, TimeSpan.Zero);
 
@@ -51,6 +83,7 @@ public sealed class TheOddsApiClientTests
         Assert.Equal("pinnacle,betonlineag,fanduel", query["bookmakers"]);
         Assert.Equal("decimal", query["oddsFormat"]);
         Assert.Equal("iso", query["dateFormat"]);
+        Assert.Equal("2026-09-03T22:15:00Z", query["commenceTimeFrom"]);
         Assert.EndsWith(
             "/v4/sports/americanfootball_nfl/odds",
             handler.RequestUri!.AbsolutePath,
@@ -76,7 +109,7 @@ public sealed class TheOddsApiClientTests
             CreateFairValueOptions(),
             CreateEvOptions(),
             new FixedClock(Now),
-            new OddsNormalizer()));
+            new OddsNormalizer(), NullLogger<TheOddsApiClient>.Instance));
 
         Assert.Contains("only supports h2h, spreads, and totals", exception.Message, StringComparison.Ordinal);
     }
@@ -92,7 +125,7 @@ public sealed class TheOddsApiClientTests
         CreateFairValueOptions(),
         CreateEvOptions(),
         new FixedClock(Now),
-        new OddsNormalizer());
+        new OddsNormalizer(), NullLogger<TheOddsApiClient>.Instance);
 
     private static IOptions<FairValueOptions> CreateFairValueOptions() =>
         Options.Create(new FairValueOptions
@@ -146,6 +179,30 @@ public sealed class TheOddsApiClientTests
             response.Headers.Add("x-requests-used", "3");
             response.Headers.Add("x-requests-last", "3");
             return Task.FromResult(response);
+        }
+    }
+
+    private sealed class RecordingLogger : ILogger<TheOddsApiClient>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+    }
+
+    private sealed class StalledBodyHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new StalledStream()) });
+    }
+
+    private sealed class StalledStream : MemoryStream
+    {
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
         }
     }
 }

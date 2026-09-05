@@ -6,7 +6,10 @@ public sealed record NormalizedOddsBatch(
     string SportKey,
     DateTimeOffset ObservedAtUtc,
     IReadOnlyList<NormalizedEvent> Events,
-    ApiQuotaSnapshot Quota);
+    ApiQuotaSnapshot Quota)
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+}
 
 public sealed record NormalizedEvent(
     string ProviderEventId,
@@ -15,6 +18,13 @@ public sealed record NormalizedEvent(
     string AwayTeam,
     DateTimeOffset CommenceTimeUtc,
     IReadOnlyList<NormalizedQuote> Quotes);
+
+public sealed record ObservedEventMetadata(
+    string ProviderEventId,
+    string SportKey,
+    string HomeTeam,
+    string AwayTeam,
+    DateTimeOffset CommenceTimeUtc);
 
 public sealed record NormalizedQuote(
     string MarketKey,
