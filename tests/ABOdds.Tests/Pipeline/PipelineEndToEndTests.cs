@@ -66,9 +66,8 @@ public sealed class PipelineEndToEndTests
             {
                 ReferenceBooks =
                 [
-                    new ReferenceBookOptions { Key = "pinnacle", Weight = 0.50m },
-                    new ReferenceBookOptions { Key = "betonlineag", Weight = 0.30m },
-                    new ReferenceBookOptions { Key = "lowvig", Weight = 0.20m }
+                    new ReferenceBookOptions { Key = "pinnacle" },
+                    new ReferenceBookOptions { Key = "betonlineag" }
                 ]
             });
         var persistedFairValues = fairValues.Select(value => new PersistedFairValue(
@@ -102,7 +101,7 @@ public sealed class PipelineEndToEndTests
         Assert.Equal(AlertReason.New, decision.Reason);
         Assert.Contains("Indianapolis Colts", discordMessage, StringComparison.Ordinal);
         Assert.Contains("FanDuel", discordMessage, StringComparison.Ordinal);
-        Assert.Contains("Sharp consensus", discordMessage, StringComparison.Ordinal);
+        Assert.Contains("BetOnline confirmed", discordMessage, StringComparison.Ordinal);
     }
 
     private static TheOddsApiBookmakerDto Book(

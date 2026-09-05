@@ -28,7 +28,11 @@ public static class EvScanner
             .Select(book => Normalize(book.Key))
             .ToHashSet(StringComparer.Ordinal);
 
+        var quoteList = quotes.ToList();
+        var unsupportedMarkets = MoneylineMarketFilter.GetUnsupportedMarkets(quoteList);
         var fairValuesBySelection = fairValues
+            .Where(value => value.Sources.All(source =>
+                !unsupportedMarkets.Contains((value.MarketId, Normalize(source.BookmakerKey)))))
             .Where(value => value.FairProbability is > 0m and < 1m)
             .Where(value => value.Sources.Count > 0)
             .Where(value => value.Sources.All(
@@ -41,8 +45,9 @@ public static class EvScanner
 
         var opportunities = new List<CalculatedEvOpportunity>();
 
-        foreach (var quote in quotes.Where(quote =>
+        foreach (var quote in quoteList.Where(quote =>
                      targetBooks.Contains(Normalize(quote.BookmakerKey))
+                     && !unsupportedMarkets.Contains((quote.MarketId, Normalize(quote.BookmakerKey)))
                      && IsPregameAndFresh(quote, asOfUtc, maximumSourceAge)
                      && quote.DecimalOdds > 1m))
         {
@@ -58,6 +63,17 @@ public static class EvScanner
 
             foreach (var fairValue in matchingFairValues)
             {
+                var validator = fairValue.Sources.SingleOrDefault(source => source.Role == FairValueSourceRole.Validation);
+                if (validator is not null)
+                {
+                    var primary = fairValue.Sources.Single(source => source.Role == FairValueSourceRole.Primary);
+                    if (Math.Abs(primary.NoVigProbability - validator.NoVigProbability) * quote.DecimalOdds >
+                        options.MaximumReferenceEvDifference)
+                    {
+                        continue;
+                    }
+                }
+
                 var expectedValue = fairValue.FairProbability * quote.DecimalOdds - 1m;
                 if (expectedValue < options.MinimumExpectedValue)
                 {

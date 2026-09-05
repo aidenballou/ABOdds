@@ -7,7 +7,7 @@ internal static class OptionsValidation
     public const string PollingError =
         "Polling intervals, near-event window, and maximum source age must be positive; the near interval cannot exceed the normal interval.";
     public const string FairValueError =
-        "FairValue requires unique nonempty reference keys, positive weights, and a minimum of at least two reachable reference books.";
+        "FairValue requires exactly Pinnacle and BetOnline as reference books.";
     public const string EvError =
         "Ev requires positive thresholds and unique nonempty target keys.";
     public const string BookSetsError =
@@ -39,16 +39,17 @@ internal static class OptionsValidation
 
     public static bool IsValidFairValue(FairValueOptions options)
     {
-        return options.MinimumReferenceBooks >= 2 &&
-               options.MinimumReferenceBooks <= options.ReferenceBooks.Count &&
-               options.ReferenceBooks.All(value => !string.IsNullOrWhiteSpace(value.Key) && value.Weight > 0m) &&
-               options.ReferenceBooks.Select(value => value.Key.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() ==
-               options.ReferenceBooks.Count;
+        return options.ReferenceBooks.Count == 2 &&
+               options.ReferenceBooks.All(value => !string.IsNullOrWhiteSpace(value.Key)) &&
+               options.ReferenceBooks.Select(value => value.Key.Trim())
+                   .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                   .SetEquals(["pinnacle", "betonlineag"]);
     }
 
     public static bool IsValidEv(EvOptions options)
     {
         return options.MinimumExpectedValue > 0m &&
+               options.MaximumReferenceEvDifference > 0m &&
                options.RealertImprovement > 0m &&
                options.TargetBooks.Count > 0 &&
                options.TargetBooks.All(value => !string.IsNullOrWhiteSpace(value.Key)) &&

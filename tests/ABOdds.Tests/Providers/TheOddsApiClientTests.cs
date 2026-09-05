@@ -132,8 +132,8 @@ public sealed class TheOddsApiClientTests
         {
             ReferenceBooks =
             [
-                new ReferenceBookOptions { Key = "Pinnacle", Weight = 0.6m },
-                new ReferenceBookOptions { Key = "betonlineag", Weight = 0.4m }
+                new ReferenceBookOptions { Key = "Pinnacle" },
+                new ReferenceBookOptions { Key = "betonlineag" }
             ]
         });
 

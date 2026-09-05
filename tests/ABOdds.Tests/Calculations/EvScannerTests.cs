@@ -141,6 +141,100 @@ public sealed class EvScannerTests
         Assert.Empty(result);
     }
 
+    [Theory]
+    [InlineData("0.565", "2", true)]
+    [InlineData("0.535", "2", true)]
+    [InlineData("0.5349", "2", false)]
+    [InlineData("0.5651", "2", false)]
+    [InlineData("0.535", "3", false)]
+    public void Scan_ValidatesAbsoluteEvDifferenceAtTheTargetPrice(string probability, string price, bool accepted)
+    {
+        var fair = CalculationTestData.FairValue(0.55m);
+        fair = fair with
+        {
+            Sources =
+            [
+                fair.Sources[0] with { Role = FairValueSourceRole.Primary },
+                fair.Sources[0] with
+                {
+                    BookmakerKey = "betonlineag", Role = FairValueSourceRole.Validation,
+                    NoVigProbability = decimal.Parse(probability, System.Globalization.CultureInfo.InvariantCulture)
+                }
+            ]
+        };
+        var quote = CalculationTestData.Quote(MarketKeys.Moneyline, "fanduel", "Team A",
+            decimal.Parse(price, System.Globalization.CultureInfo.InvariantCulture));
+        var result = EvScanner.Scan([quote], [fair], CalculationTestData.Now, MaximumSourceAge, Options(0.03m, "fanduel"));
+        Assert.Equal(accepted ? 1 : 0, result.Count);
+        if (accepted) Assert.Equal(0.55m, result[0].FairProbability);
+    }
+
+    [Theory]
+    [InlineData(FairValueSourceRole.Primary)]
+    [InlineData(FairValueSourceRole.Fallback)]
+    public void Scan_AllowsUnvalidatedAndFallbackOpportunities(FairValueSourceRole role)
+    {
+        var fair = CalculationTestData.FairValue(0.55m);
+        fair = fair with { Sources = [fair.Sources[0] with
+        {
+            Role = role, BookmakerKey = role == FairValueSourceRole.Primary ? "pinnacle" : "betonlineag"
+        }] };
+        var quote = CalculationTestData.Quote(MarketKeys.Moneyline, "fanduel", "Team A", 2m);
+        var opportunity = Assert.Single(EvScanner.Scan([quote], [fair], CalculationTestData.Now,
+            MaximumSourceAge, Options(0.03m, "fanduel")));
+        Assert.Equal(role, Assert.Single(opportunity.Sources).Role);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Scan_RejectsThreeWayTargetsWithoutDiscardingTwoWayTargets(bool staleDraw)
+    {
+        var quotes = new[]
+        {
+            CalculationTestData.Quote(MarketKeys.Moneyline, "pinnacle", "Team A", 1.8m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "pinnacle", "Team B", 2.2m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "betonlineag", "Team A", 2m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "betonlineag", "Team B", 4m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "betonlineag", "Draw", 4m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "fanduel", "Team A", 2m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "fanduel", "Team B", 4m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "fanduel", "Draw", 4m,
+                sourceUpdatedAtUtc: staleDraw ? CalculationTestData.Now.AddSeconds(-91) : CalculationTestData.Now),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "draftkings", "Team A", 2m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "draftkings", "Team B", 2m)
+        };
+        var calculated = FairValueCalculator.Calculate(quotes, CalculationTestData.Now, MaximumSourceAge,
+            new FairValueOptions { ReferenceBooks = [new() { Key = "pinnacle" }, new() { Key = "betonlineag" }] });
+        var persisted = calculated.Select(value => new PersistedFairValue(Guid.NewGuid(), value.MarketId,
+            value.SelectionKey, value.SelectionDisplayName, value.Line, value.FairProbability,
+            value.FairDecimalOdds, value.Sources));
+
+        var result = EvScanner.Scan(quotes, persisted, CalculationTestData.Now, MaximumSourceAge,
+            Options(0.03m, "fanduel", "draftkings"));
+
+        var opportunity = Assert.Single(result);
+        Assert.Equal("draftkings", opportunity.BookmakerKey);
+        Assert.Equal("team a", opportunity.SelectionKey);
+        Assert.InRange(opportunity.ExpectedValue, 0.099999999m, 0.100000001m);
+    }
+
+    [Fact]
+    public void Scan_RejectsPersistedFairValuesFromThreeWayReferences()
+    {
+        var quotes = new[]
+        {
+            CalculationTestData.Quote(MarketKeys.Moneyline, "pinnacle", "Team A", 2m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "pinnacle", "Team B", 4m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "pinnacle", "Draw", 4m),
+            CalculationTestData.Quote(MarketKeys.Moneyline, "fanduel", "Team A", 2.2m)
+        };
+        var result = EvScanner.Scan(quotes, [CalculationTestData.FairValue(0.5m)], CalculationTestData.Now,
+            MaximumSourceAge, Options(0.03m, "fanduel"));
+
+        Assert.Empty(result);
+    }
+
     private static EvOptions Options(decimal minimumExpectedValue, params string[] books) =>
         new()
         {

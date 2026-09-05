@@ -1,6 +1,6 @@
 # ABOdds
 
-ABOdds is one .NET worker application that polls pregame football odds, calculates exact-line no-vig fair values, finds positive expected value, and sends deduplicated Discord alerts. PostgreSQL stores every normalized quote and every downstream decision.
+ABOdds is one .NET worker application that polls pregame football odds, calculates exact-line Pinnacle no-vig fair values with BetOnline validation, finds positive expected value, and sends deduplicated Discord alerts. PostgreSQL stores every normalized quote and every downstream decision.
 
 There is no HTTP API, UI, message broker, bet placement, player-prop support, or CLV calculation in this version.
 
@@ -21,7 +21,9 @@ Two background workers run inside one process: polling/processing and Discord de
 
 Run one worker replica in V1. Alert-state database updates are serialized, but Discord HTTP does not hold that lock. Each send checks validity and is limited by a ten-second request timeout, source expiry, and kickoff. An in-flight message may still reach Discord after a newer snapshot arrives. A crash after Discord accepts a message but before its delivery is recorded can cause a duplicate on restart.
 
-Discord rate limits pause the whole webhook, including newly queued alerts. The cooldown is persisted so restarting the worker does not bypass it.
+Discord rate limits pause the whole webhook, including newly queued alerts. The cooldown is persisted so restarting the worker does not bypass it. Successful responses with an exhausted rate-limit bucket also pause delivery until Discord's reset time, with a 250 ms margin. Requests use `wait=true` for server confirmation. A 429 keeps the alert pending; stale, superseded, or started-event alerts still expire rather than sending outdated prices.
+
+Notifications use a compact green embed: selection and offered price, sportsbook and EV, matchup and kickoff, then fair odds and reference confidence. Push caveats remain visible. Reference-price lists and validation arithmetic remain available in stored calculation history rather than occupying the notification. Existing queued messages retain their saved text; newly created alerts use the compact layout.
 
 ## V1 rules
 
@@ -31,22 +33,26 @@ Discord rate limits pause the whole webhook, including newly queued alerts. The 
 - Poll each league every five minutes normally and every minute when that league has a known event within six hours
 - Reject provider quotes older than 90 seconds at the time of the poll
 - Request decimal odds and use decimal arithmetic for probabilities and EV
-- Remove each reference book's vig before applying consensus weights
-- Require two fresh reference books
+- Remove each reference book's vig independently
+- Use Pinnacle no-vig fair probabilities; use BetOnline only for validation
+- Suppress a target opportunity if the absolute Pinnacle/BetOnline EV difference exceeds 3 percentage points
+- Send Pinnacle-only opportunities as UNVALIDATED; use BetOnline alone with LOWER confidence when Pinnacle is unavailable
+- Reject reference and target moneyline markets containing a draw or any outcome other than the two teams
 - Compare spreads and totals only at the exact same line
 - Alert at EV of 3% or more
 - Re-alert after disappearance and reappearance, or after EV improves by at least one percentage point from the last alert
 - Expire queued alerts if kickoff passes, a newer poll replaces them, or any contributing price becomes stale
 
-Startup rejects duplicate sports/markets, blank or duplicate book keys after trimming and case normalization, nonpositive weights or EV thresholds, reference/target overlap, fewer than two required references, and more than ten total books. To change the bookmaker set, replace an existing book instead of adding an eleventh one.
+Startup rejects duplicate sports/markets, blank or duplicate book keys after trimming and case normalization, nonpositive EV thresholds or validation tolerance, reference/target overlap, references other than exactly Pinnacle and BetOnline, and more than ten total books. To change the bookmaker set, replace an existing book instead of adding an eleventh one.
 
-Reference books and weights:
+Reference books:
 
-| API key | Book | Weight |
-| --- | --- | ---: |
-| `pinnacle` | Pinnacle | 50% |
-| `betonlineag` | BetOnline | 30% |
-| `lowvig` | LowVig | 20% |
+| API key | Book | Role |
+| --- | --- | --- |
+| `pinnacle` | Pinnacle | Primary fair probability |
+| `betonlineag` | BetOnline | Validation; fallback if Pinnacle is unavailable |
+
+LowVig is excluded from fair-value calculations and API requests.
 
 Target books:
 
@@ -60,9 +66,9 @@ Target books:
 | `hardrockbet` | Hard Rock Bet |
 | `espnbet` | theScore Bet |
 
-The names and keys follow [The Odds API bookmaker catalog](https://the-odds-api.com/sports-odds-data/bookmaker-apis.html). These three references are provisional. The provider warns that its public Pinnacle feed may be delayed, and BetOnline and LowVig should not be treated as proven independent sharp signals.
+The names and keys follow [The Odds API bookmaker catalog](https://the-odds-api.com/sports-odds-data/bookmaker-apis.html). The provider warns that its public Pinnacle feed may be delayed. BetOnline agreement is a cross-check, not a guarantee of accuracy.
 
-The 10 unique books count as one bookmaker group under The Odds API's current quota rules. One NFL and NCAAF cycle requesting all three markets costs 6 credits when both responses contain events. Five-minute polling around the clock would use 51,840 credits per 30 days before any one-minute windows. Responses with no events cost no credits, and actual usage is reported by the provider. Adding an eleventh book doubles the bookmaker component of the request cost. The worker records `x-requests-remaining`, `x-requests-used`, and `x-requests-last` on every successfully persisted poll. Review the provider's [current quota rules](https://the-odds-api.com/liveapi/guides/v4/) before enabling it.
+The 9 unique books count as one bookmaker group under The Odds API's current quota rules. One NFL and NCAAF cycle requesting all three markets costs 6 credits when both responses contain events. Five-minute polling around the clock would use 51,840 credits per 30 days before any one-minute windows. Responses with no events cost no credits, and actual usage is reported by the provider. Adding an eleventh book doubles the bookmaker component of the request cost. The worker records `x-requests-remaining`, `x-requests-used`, and `x-requests-last` on every successfully persisted poll. Review the provider's [current quota rules](https://the-odds-api.com/liveapi/guides/v4/) before enabling it.
 
 ## Run with Docker
 
@@ -80,7 +86,7 @@ docker compose up -d postgres
 docker compose run --rm worker --once
 ```
 
-`--once` enables odds fetching, forces Discord delivery off, and makes at most one request per configured league. It prints the request count and estimated per-request credits before fetching. With the default ten books and three markets, that is at most two requests, normally six credits total. It stores snapshots, calculations, and pending alerts, then exits. There are no automatic HTTP retries. Empty responses can cost less. This command uses a real API key and is not a free offline test.
+`--once` enables odds fetching, forces Discord delivery off, and makes at most one request per configured league. It prints the request count and estimated per-request credits before fetching. With the default nine books and three markets, that is at most two requests, normally six credits total. It stores snapshots, calculations, and pending alerts, then exits. There are no automatic HTTP retries. Empty responses can cost less. This command uses a real API key and is not a free offline test.
 
 After the smoke test succeeds and you review its logs, enable both integrations and choose `MAXIMUM_CREDITS_PER_RUN` for continuous operation:
 
@@ -147,12 +153,12 @@ The script starts a temporary PostgreSQL server on an available localhost port, 
 - `events` stores provider event IDs, teams, sport, and kickoff time.
 - `markets` identifies the event, market type, and pregame period.
 - `odds_snapshots` stores every normalized bookmaker outcome with both local observation time and provider source-update time.
-- `fair_values` stores the consensus probability, fair price, line, reference count, source breakdown, and calculation-method version.
+- `fair_values` stores the selected no-vig probability, fair price, line, reference count, source breakdown, and calculation-method version.
 - `ev_opportunities` stores qualifying target prices and links each one to its quote and fair value.
 - `alert_states` stores the structured dedup key and active, last-seen, last-alerted, and disappearance state.
 - `alerts` is both alert history and the Discord delivery outbox.
 
-This is enough to add CLV without changing historical quote collection. The next slice should select the last fresh pregame consensus before kickoff, preserve exact-line matching, and compare it with the alerted price. If the original line has no closing consensus, leave CLV unpriced instead of interpolating one.
+This is enough to add CLV without changing historical quote collection. The next slice should select the last fresh pregame fair value before kickoff, preserve exact-line matching, and compare it with the alerted price. If the original line has no closing fair value, leave CLV unpriced instead of interpolating one.
 
 Historical calculations use the matchup and kickoff captured in `poll_batches.EventMetadataJson`, not the mutable latest event row. Calculation, detection, stage-completion, and alert-creation timestamps record actual processing time. Observation timestamps remain separate and drive freshness and deduplication. `alert_states.LastAlertedAtUtc` identifies the observation underlying the latest queued baseline; `alerts.SentAtUtc` records delivery. Delivery still checks the latest known kickoff as a safety guard.
 
@@ -160,15 +166,21 @@ For databases created before this change, migrations preserve existing data. Old
 
 ## Fair-value calculation
 
-For each complete reference-book market:
+For each complete, fresh reference-book market:
 
 ```text
 implied probability = 1 / decimal odds
-no-vig probability  = implied probability / sum of all outcome probabilities
-fair probability    = sum(no-vig probability * configured weight) / sum(contributing weights)
-EV                  = fair probability * target decimal odds - 1
+no-vig probability = implied probability / sum of all outcome probabilities
+fair probability = Pinnacle no-vig probability, or BetOnline if Pinnacle is unavailable
+fair odds = 1 / fair probability
+EV = fair probability * target decimal odds - 1
+reference EV difference = abs(Pinnacle probability - BetOnline probability) * target decimal odds
 ```
 
-Weights are renormalized when a configured reference book is absent or stale, but the two-book minimum still applies. A `+3.5` spread never contributes to a `+3` fair value, and a total of `45.5` never contributes to `46`.
+When both references are available for the same selection, exact line, and outcome set, BetOnline validates Pinnacle without changing its fair probability. Reject a target opportunity when the absolute EV difference exceeds `Ev:MaximumReferenceEvDifference`, default `0.03`, or 3 percentage points. Equality passes. This is an EV difference at the target price, not a probability difference. For example, probabilities of 55% and 53.5% differ by 3 EV points at decimal odds 2.00, but 4.5 points at 3.00.
+
+If BetOnline is missing, stale, incomplete, or has a different line or outcome set, send qualifying Pinnacle opportunities marked `UNVALIDATED`. If Pinnacle is unavailable for that selection and exact line, use BetOnline no-vig and mark confidence `LOWER`. If neither reference has a complete fresh market, produce no fair value. A `+3.5` spread never validates a `+3` spread, and a total of `45.5` never validates `46`.
+
+Source roles are persisted with the reference prices and probabilities. New fair values use calculation version `pinnacle-devig-betonline-validation-v2`; historical calculations retain their original version and weights. No database migration is required for the new JSON source roles.
 
 Whole-number spreads/totals and football moneylines are retained. Their alerts label EV and fair probability as **conditional on no push**. The configured EV threshold and re-alert improvement apply to those conditional values. Two prices cannot establish push probability, so the app does not estimate it. If the push probability is `q`, unconditional stake EV is `(1 - q) * conditional EV`. For example, conditional EV of 3.1% with a hypothetical 10% push probability is 2.79% stake EV. Moneyline comparisons assume matching two-way settlement with stakes returned on a tie; verify the book's settlement rules before acting. Half-point spreads and totals keep the ordinary EV label.

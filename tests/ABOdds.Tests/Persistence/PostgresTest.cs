@@ -34,9 +34,8 @@ public abstract class PostgresTest : IAsyncLifetime
     {
         ReferenceBooks =
         [
-            new() { Key = "pinnacle", DisplayName = "Pinnacle", Weight = 0.5m },
-            new() { Key = "betonlineag", DisplayName = "BetOnline", Weight = 0.3m },
-            new() { Key = "lowvig", DisplayName = "LowVig", Weight = 0.2m }
+            new() { Key = "pinnacle", DisplayName = "Pinnacle" },
+            new() { Key = "betonlineag", DisplayName = "BetOnline" }
         ]
     };
     protected static EvOptions Ev => new()

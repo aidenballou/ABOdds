@@ -5,7 +5,7 @@ namespace ABOdds.Services.Calculations;
 
 public static class FairValueCalculator
 {
-    public const string Version = "proportional-devig-v1";
+    public const string Version = "pinnacle-devig-betonline-validation-v2";
     public static IReadOnlyList<CalculatedFairValue> Calculate(
         IEnumerable<MarketQuote> quotes,
         DateTimeOffset asOfUtc,
@@ -22,22 +22,18 @@ public static class FairValueCalculator
                 "Maximum source age cannot be negative.");
         }
 
-        if (options.MinimumReferenceBooks < 1)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(options),
-                "At least one reference book must be required.");
-        }
-
         var referenceBooks = options.ReferenceBooks
-            .Where(book => !string.IsNullOrWhiteSpace(book.Key) && book.Weight > 0m)
-            .GroupBy(book => Normalize(book.Key))
-            .ToDictionary(group => group.Key, group => group.First());
+            .Select(book => Normalize(book.Key))
+            .Where(key => key is "pinnacle" or "betonlineag")
+            .ToHashSet(StringComparer.Ordinal);
 
-        var eligibleQuotes = quotes
+        var quoteList = quotes.ToList();
+        var unsupportedMarkets = MoneylineMarketFilter.GetUnsupportedMarkets(quoteList);
+        var eligibleQuotes = quoteList
+            .Where(quote => !unsupportedMarkets.Contains((quote.MarketId, Normalize(quote.BookmakerKey))))
             .Where(quote => IsPregameAndFresh(quote, asOfUtc, maximumSourceAge))
             .Where(quote => quote.DecimalOdds > 1m)
-            .Where(quote => referenceBooks.ContainsKey(Normalize(quote.BookmakerKey)))
+            .Where(quote => referenceBooks.Contains(Normalize(quote.BookmakerKey)))
             .ToList();
 
         var sourceProbabilities = new List<SourceProbability>();
@@ -47,11 +43,6 @@ public static class FairValueCalculator
                      Normalize(quote.MarketKey),
                      Normalize(quote.BookmakerKey))))
         {
-            if (!referenceBooks.TryGetValue(bookMarket.Key.BookmakerKey, out var referenceBook))
-            {
-                continue;
-            }
-
             foreach (var outcomeGroup in GroupOutcomes(bookMarket))
             {
                 var outcomes = GetCompleteOutcomes(bookMarket.Key.MarketKey, outcomeGroup);
@@ -76,9 +67,8 @@ public static class FairValueCalculator
                 {
                     var noVigProbability = (1m / outcome.DecimalOdds) / impliedProbabilityTotal;
                     sourceProbabilities.Add(new SourceProbability(
-                        outcome,
+                        outcome with { SourceUpdatedAtUtc = outcomes.Min(value => value.SourceUpdatedAtUtc) },
                         noVigProbability,
-                        referenceBook.Weight,
                         outcomeSetKey));
                 }
             }
@@ -89,28 +79,29 @@ public static class FairValueCalculator
         foreach (var selectionGroup in sourceProbabilities.GroupBy(source => new SelectionLineKey(
                      source.Quote.MarketId,
                      OddsKey.NormalizeSelection(source.Quote.SelectionKey),
-                     source.Quote.Line,
-                     source.OutcomeSetKey)))
+                     source.Quote.Line)))
         {
             var contributors = selectionGroup
                 .GroupBy(source => Normalize(source.Quote.BookmakerKey))
                 .Select(group => group
                     .OrderByDescending(source => source.Quote.SourceUpdatedAtUtc)
                     .First())
-                .OrderByDescending(source => source.ConfiguredWeight)
-                .ThenBy(source => source.Quote.BookmakerKey, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            if (contributors.Count < options.MinimumReferenceBooks)
+            var primary = contributors.FirstOrDefault(source => Normalize(source.Quote.BookmakerKey) == "pinnacle");
+            var fallback = contributors.FirstOrDefault(source => Normalize(source.Quote.BookmakerKey) == "betonlineag");
+            var selected = primary ?? fallback!;
+            var validator = primary is not null && fallback?.OutcomeSetKey == primary.OutcomeSetKey
+                ? fallback
+                : null;
+            var fairProbability = selected.NoVigProbability;
+            var sources = new List<FairValueSource>
             {
-                continue;
-            }
+                ToSource(selected, primary is not null ? FairValueSourceRole.Primary : FairValueSourceRole.Fallback)
+            };
+            if (validator is not null) sources.Add(ToSource(validator, FairValueSourceRole.Validation));
 
-            var totalWeight = contributors.Sum(source => source.ConfiguredWeight);
-            var fairProbability = contributors.Sum(
-                source => source.NoVigProbability * source.ConfiguredWeight) / totalWeight;
-
-            var first = contributors[0].Quote;
+            var first = selected.Quote;
             fairValues.Add(new CalculatedFairValue(
                 selectionGroup.Key.MarketId,
                 first.SelectionKey,
@@ -118,14 +109,7 @@ public static class FairValueCalculator
                 selectionGroup.Key.Line,
                 fairProbability,
                 1m / fairProbability,
-                contributors.Select(source => new FairValueSource(
-                        source.Quote.BookmakerKey,
-                        source.Quote.BookmakerTitle,
-                        source.Quote.DecimalOdds,
-                        source.NoVigProbability,
-                        source.ConfiguredWeight,
-                        source.Quote.SourceUpdatedAtUtc))
-                    .ToList()));
+                sources));
         }
 
         return fairValues
@@ -134,6 +118,11 @@ public static class FairValueCalculator
             .ThenBy(value => value.Line)
             .ToList();
     }
+
+    private static FairValueSource ToSource(SourceProbability source, FairValueSourceRole role) =>
+        new(source.Quote.BookmakerKey, source.Quote.BookmakerTitle, source.Quote.DecimalOdds,
+            source.NoVigProbability, role == FairValueSourceRole.Validation ? 0m : 1m,
+            source.Quote.SourceUpdatedAtUtc) { Role = role };
 
     private static IEnumerable<IEnumerable<MarketQuote>> GroupOutcomes(
         IEnumerable<MarketQuote> bookMarket)
@@ -179,7 +168,7 @@ public static class FairValueCalculator
 
         if (marketKey == MarketKeys.Moneyline)
         {
-            return outcomes.Count >= 2 && expectedTeams.IsSubsetOf(actualSelections)
+            return outcomes.Count == 2 && expectedTeams.SetEquals(actualSelections)
                 ? outcomes
                 : null;
         }
@@ -227,12 +216,10 @@ public static class FairValueCalculator
     private readonly record struct SelectionLineKey(
         Guid MarketId,
         string SelectionKey,
-        decimal? Line,
-        string OutcomeSetKey);
+        decimal? Line);
 
     private sealed record SourceProbability(
         MarketQuote Quote,
         decimal NoVigProbability,
-        decimal ConfiguredWeight,
         string OutcomeSetKey);
 }

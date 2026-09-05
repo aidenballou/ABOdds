@@ -33,11 +33,13 @@ public sealed class DiscordWebhookClientTests
         Assert.True(result.IsSuccess);
         Assert.False(result.IsRateLimited);
         Assert.Null(result.RetryAfter);
-        Assert.Equal(WebhookUri, requestUri);
+        Assert.Equal(new Uri(WebhookUri + "?wait=true"), requestUri);
 
         using var payload = JsonDocument.Parse(requestBody!);
-        Assert.Equal("test alert", payload.RootElement.GetProperty("content").GetString());
+        Assert.Equal("test alert", payload.RootElement.GetProperty("embeds")[0].GetProperty("description").GetString());
         Assert.Equal("ABOdds Tests", payload.RootElement.GetProperty("username").GetString());
+        Assert.Equal(0x2ECC71, payload.RootElement.GetProperty("embeds")[0].GetProperty("color").GetInt32());
+        Assert.Empty(payload.RootElement.GetProperty("allowed_mentions").GetProperty("parse").EnumerateArray());
     }
 
     [Fact]
@@ -74,6 +76,41 @@ public sealed class DiscordWebhookClientTests
         Assert.False(result.IsSuccess);
         Assert.False(result.IsRateLimited);
         Assert.Null(result.RetryAfter);
+    }
+
+    [Theory]
+    [InlineData("0", "1.25", 1.25)]
+    [InlineData("1", "1.25", null)]
+    [InlineData("0", "invalid", null)]
+    public async Task SendAsync_SuccessfulResponse_ReportsExhaustedBucket(string remaining, string reset, double? expected)
+    {
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK);
+            response.Headers.TryAddWithoutValidation("X-RateLimit-Remaining", remaining);
+            response.Headers.TryAddWithoutValidation("X-RateLimit-Reset-After", reset);
+            return Task.FromResult(response);
+        });
+        using var httpClient = new HttpClient(handler);
+        var result = await CreateClient(httpClient).SendAsync("test alert", default);
+        Assert.True(result.IsSuccess);
+        Assert.Equal(expected.HasValue ? TimeSpan.FromSeconds(expected.Value) : (TimeSpan?)null, result.Cooldown);
+    }
+
+    [Theory]
+    [InlineData("Retry-After")]
+    [InlineData("X-RateLimit-Reset-After")]
+    public async Task SendAsync_RateLimited_HandlesFractionalHeaders(string header)
+    {
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.TryAddWithoutValidation(header, "2.75");
+            return Task.FromResult(response);
+        });
+        using var httpClient = new HttpClient(handler);
+        var result = await CreateClient(httpClient).SendAsync("test alert", default);
+        Assert.Equal(TimeSpan.FromSeconds(2.75), result.RetryAfter);
     }
 
     private static DiscordWebhookClient CreateClient(HttpClient httpClient) =>

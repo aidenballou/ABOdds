@@ -51,7 +51,61 @@ public sealed class DiscordWorkerTests : PostgresTest
         }
         Assert.Equal(1, client.Calls);
         Assert.Null(await Alerts.GetNextPendingAsync(Now.AddSeconds(59), default));
-        Assert.NotNull(await Alerts.GetNextPendingAsync(Now.AddSeconds(60), default));
+        Assert.NotNull(await Alerts.GetNextPendingAsync(Now.AddSeconds(60.25), default));
+    }
+
+    [PostgresFact]
+    public async Task SuccessfulSend_ExhaustedBucketPausesOutboxAcrossRestart()
+    {
+        var batch = Batch();
+        batch = batch with { Events = [batch.Events[0], batch.Events[0] with { ProviderEventId = "event-2" }] };
+        await Alerts.ApplyRulesAsync(await ProcessAsync(batch), default);
+        var client = new SuccessfulWebhook(TimeSpan.FromSeconds(10));
+        using var gate = new SemaphoreSlim(1, 1);
+        using (var worker = CreateWorker(client, gate))
+        {
+            await worker.StartAsync(default);
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                while (true)
+                {
+                    await using var db = await Factory.CreateDbContextAsync();
+                    if (await db.Alerts.AnyAsync(value => value.DeliveryStatus == AlertDeliveryStatus.Sent, timeout.Token)) break;
+                    await Task.Delay(10, timeout.Token);
+                }
+            }
+            finally { await worker.StopAsync(default); }
+        }
+        using (var restarted = CreateWorker(client, gate))
+        {
+            await restarted.StartAsync(default);
+            await Task.Delay(100);
+            await restarted.StopAsync(default);
+        }
+        Assert.Equal(1, client.Calls);
+        Assert.Null(await Alerts.GetNextPendingAsync(Now.AddSeconds(10), default));
+        Assert.NotNull(await Alerts.GetNextPendingAsync(Now.AddSeconds(10.25), default));
+    }
+
+    [PostgresFact]
+    public async Task RateLimitedAlert_IsDeliveredAfterCooldown()
+    {
+        var id = Assert.Single(await Alerts.ApplyRulesAsync(await ProcessAsync(Batch()), default));
+        using var gate = new SemaphoreSlim(1, 1);
+        using (var limitedWorker = CreateWorker(new RateLimitedWebhook(), gate))
+        {
+            await limitedWorker.StartAsync(default);
+            try { await WaitForStatusAsync(id, AlertDeliveryStatus.Pending, minimumAttempts: 1); }
+            finally { await limitedWorker.StopAsync(default); }
+        }
+        Assert.Null(await Alerts.GetNextPendingAsync(Now.AddSeconds(60), default));
+        var client = new SuccessfulWebhook(null);
+        using var worker = CreateWorker(client, gate, now: Now.AddSeconds(60.25));
+        await worker.StartAsync(default);
+        try { await WaitForStatusAsync(id, AlertDeliveryStatus.Sent, minimumAttempts: 2); }
+        finally { await worker.StopAsync(default); }
+        Assert.Equal(1, client.Calls);
     }
 
     [PostgresFact]
@@ -126,11 +180,11 @@ public sealed class DiscordWorkerTests : PostgresTest
     }
 
     private DiscordAlertWorker CreateWorker(IDiscordWebhookClient client, SemaphoreSlim gate,
-        TimeSpan? sourceAge = null, TimeSpan? requestTimeout = null) => new(
+        TimeSpan? sourceAge = null, TimeSpan? requestTimeout = null, DateTimeOffset? now = null) => new(
         Alerts, client,
         Options.Create(new DiscordOptions { Enabled = true, RequestTimeout = requestTimeout ?? TimeSpan.FromSeconds(10) }),
         Options.Create(new PollingOptions { MaximumSourceAge = sourceAge ?? TimeSpan.FromSeconds(90) }),
-        gate, new FixedClock(Now), NullLogger<DiscordAlertWorker>.Instance);
+        gate, new FixedClock(now ?? Now), NullLogger<DiscordAlertWorker>.Instance);
 
     private async Task WaitForStatusAsync(Guid id, AlertDeliveryStatus status, int minimumAttempts = 0)
     {
@@ -159,6 +213,17 @@ public sealed class DiscordWorkerTests : PostgresTest
             try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
             catch (OperationCanceledException) { Cancelled = true; throw; }
             return new(HttpStatusCode.NoContent, null);
+        }
+    }
+
+    private sealed class SuccessfulWebhook(TimeSpan? cooldown) : IDiscordWebhookClient
+    {
+        private int _calls;
+        public int Calls => Volatile.Read(ref _calls);
+        public Task<DiscordWebhookResult> SendAsync(string content, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _calls);
+            return Task.FromResult(new DiscordWebhookResult(HttpStatusCode.OK, null, cooldown));
         }
     }
 

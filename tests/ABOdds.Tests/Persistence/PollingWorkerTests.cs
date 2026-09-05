@@ -26,7 +26,7 @@ public sealed class PollingWorkerTests : PostgresTest
             sport => Assert.Equal("americanfootball_ncaaf", sport));
         await using var db = await Factory.CreateDbContextAsync();
         Assert.Equal(2, await db.PollBatches.CountAsync(value => value.AlertRulesCompletedAtUtc != null));
-        Assert.Equal(14, await db.OddsSnapshots.CountAsync());
+        Assert.Equal(10, await db.OddsSnapshots.CountAsync());
         Assert.Equal(2, await db.Alerts.CountAsync());
     }
 
@@ -52,7 +52,7 @@ public sealed class PollingWorkerTests : PostgresTest
         Assert.Equal(1, worker.ExitCode);
         Assert.Single(provider.Calls);
         await using var db = await Factory.CreateDbContextAsync();
-        Assert.Equal(7, await db.OddsSnapshots.CountAsync());
+        Assert.Equal(5, await db.OddsSnapshots.CountAsync());
         Assert.Equal("fair-value", (await db.PollBatches.SingleAsync()).LastFailedStage);
         Assert.Equal(0, await db.FairValues.CountAsync());
     }
@@ -81,7 +81,7 @@ public sealed class PollingWorkerTests : PostgresTest
         Assert.Equal(0, worker.ExitCode);
         Assert.Empty(provider.Calls);
         await using var db = await Factory.CreateDbContextAsync();
-        Assert.Equal(7, await db.OddsSnapshots.CountAsync());
+        Assert.Equal(5, await db.OddsSnapshots.CountAsync());
         Assert.Equal(1, await db.Alerts.CountAsync());
         Assert.NotNull((await db.PollBatches.SingleAsync()).AlertRulesCompletedAtUtc);
     }

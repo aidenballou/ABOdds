@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 
 namespace ABOdds.Services.Alerts;
 
-public sealed record DiscordWebhookResult(HttpStatusCode StatusCode, TimeSpan? RetryAfter)
+public sealed record DiscordWebhookResult(HttpStatusCode StatusCode, TimeSpan? RetryAfter, TimeSpan? Cooldown = null)
 {
     public bool IsSuccess => (int)StatusCode is >= 200 and <= 299;
     public bool IsRateLimited => StatusCode == HttpStatusCode.TooManyRequests;
@@ -39,16 +39,33 @@ public sealed class DiscordWebhookClient : IDiscordWebhookClient
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(content);
 
+        var uri = new UriBuilder(_options.WebhookUrl);
+        var query = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(value => !value.StartsWith("wait=", StringComparison.OrdinalIgnoreCase));
+        uri.Query = string.Join('&', query.Append("wait=true"));
         using var response = await _httpClient.PostAsJsonAsync(
-            _options.WebhookUrl,
-            new DiscordWebhookPayload(content, _options.Username),
+            uri.Uri,
+            new
+            {
+                username = _options.Username,
+                embeds = new[] { new { description = content, color = 0x2ECC71 } },
+                allowed_mentions = new { parse = Array.Empty<string>() }
+            },
             cancellationToken);
 
         var retryAfter = response.StatusCode == HttpStatusCode.TooManyRequests
             ? await ReadRetryAfterAsync(response, cancellationToken)
             : null;
 
-        return new DiscordWebhookResult(response.StatusCode, retryAfter);
+        TimeSpan? cooldown = null;
+        if (response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining) &&
+            remaining.FirstOrDefault() == "0" &&
+            TryReadSecondsHeader(response, "X-RateLimit-Reset-After", out var resetAfter))
+        {
+            cooldown = resetAfter;
+        }
+
+        return new DiscordWebhookResult(response.StatusCode, retryAfter, cooldown);
     }
 
     private static async Task<TimeSpan?> ReadRetryAfterAsync(
@@ -128,13 +145,11 @@ public sealed class DiscordWebhookClient : IDiscordWebhookClient
 
     private static TimeSpan? ToDuration(decimal seconds)
     {
-        if (seconds < 0m)
+        if (seconds < 0m || seconds >= (decimal)TimeSpan.MaxValue.TotalSeconds)
         {
             return null;
         }
 
         return TimeSpan.FromSeconds((double)seconds);
     }
-
-    private sealed record DiscordWebhookPayload(string Content, string Username);
 }

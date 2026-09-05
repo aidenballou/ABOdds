@@ -10,11 +10,11 @@ public sealed class ConfigurationTests
     [Theory]
     [InlineData("OddsApi", "OddsApi:Sports:1", "americanfootball_nfl")]
     [InlineData("OddsApi", "OddsApi:Markets:1", "h2h")]
-    [InlineData("FairValue", "FairValue:ReferenceBooks:1:Weight", "0")]
-    [InlineData("FairValue", "FairValue:ReferenceBooks:1:Weight", "-1")]
+    [InlineData("Ev", "Ev:MaximumReferenceEvDifference", "0")]
+    [InlineData("Ev", "Ev:MaximumReferenceEvDifference", "-0.01")]
     [InlineData("FairValue", "FairValue:ReferenceBooks:1:Key", " pinnacle ")]
     [InlineData("FairValue", "FairValue:ReferenceBooks:1:Key", " ")]
-    [InlineData("FairValue", "FairValue:MinimumReferenceBooks", "1")]
+    [InlineData("FairValue", "FairValue:ReferenceBooks:1:Key", "lowvig")]
     [InlineData("Ev", "Ev:TargetBooks:0:Key", " pinnacle ")]
     [InlineData("Ev", "Ev:TargetBooks:1:Key", " FANDUEL ")]
     [InlineData("Ev", "Ev:TargetBooks:0:Key", " ")]
@@ -42,20 +42,21 @@ public sealed class ConfigurationTests
     {
         var builder = ApplicationHost.CreateBuilder([]);
         builder.Configuration["Ev:TargetBooks:7:Key"] = "betrivers";
+        builder.Configuration["Ev:TargetBooks:8:Key"] = "circa";
         using var host = builder.Build();
         Assert.Throws<OptionsValidationException>(() => host.Services.GetRequiredService<IOptions<EvOptions>>().Value);
     }
 
     [Fact]
-    public void Defaults_HaveTenDisjointBooksAndRequestedWeights()
+    public void Defaults_HaveNineDisjointBooksAndThreePointValidationTolerance()
     {
         var builder = ApplicationHost.CreateBuilder([]);
         using var host = builder.Build();
         var references = host.Services.GetRequiredService<IOptions<FairValueOptions>>().Value;
         var ev = host.Services.GetRequiredService<IOptions<EvOptions>>().Value;
-        Assert.Equal(2, references.MinimumReferenceBooks);
+        Assert.Equal(0.03m, ev.MaximumReferenceEvDifference);
         Assert.Collection(references.ReferenceBooks,
-            book => Assert.Equal(0.5m, book.Weight), book => Assert.Equal(0.3m, book.Weight), book => Assert.Equal(0.2m, book.Weight));
-        Assert.Equal(10, references.ReferenceBooks.Select(book => book.Key).Concat(ev.TargetBooks.Select(book => book.Key)).Distinct().Count());
+            book => Assert.Equal("pinnacle", book.Key), book => Assert.Equal("betonlineag", book.Key));
+        Assert.Equal(9, references.ReferenceBooks.Select(book => book.Key).Concat(ev.TargetBooks.Select(book => book.Key)).Distinct().Count());
     }
 }

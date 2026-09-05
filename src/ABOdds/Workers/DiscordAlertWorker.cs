@@ -133,7 +133,12 @@ public sealed class DiscordAlertWorker(
             var result = await discordClient.SendAsync(alert.Message, attempt.Token);
             if (result.IsSuccess)
             {
-                await UpdateStateAsync(() => alertRepository.MarkSentAsync(alert.Id, clock.UtcNow, cancellationToken), cancellationToken);
+                var sentAt = clock.UtcNow;
+                var cooldownUntil = result.Cooldown is { } cooldown
+                    ? sentAt + cooldown + TimeSpan.FromMilliseconds(250)
+                    : (DateTimeOffset?)null;
+                await UpdateStateAsync(() => alertRepository.MarkSentAsync(
+                    alert.Id, sentAt, cancellationToken, cooldownUntil), cancellationToken);
                 LogSent(logger, alert.Id, null);
                 return;
             }
@@ -141,6 +146,8 @@ public sealed class DiscordAlertWorker(
             if (result.IsRateLimited)
             {
                 var delay = result.RetryAfter ?? GetExponentialRetryDelay(alert.DeliveryAttempts);
+                if (result.Cooldown > delay) delay = result.Cooldown.Value;
+                delay += TimeSpan.FromMilliseconds(250);
                 var until = clock.UtcNow + (delay < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : delay);
                 const string reason = "Discord returned HTTP 429.";
                 await UpdateStateAsync(() => alertRepository.ScheduleRetryAsync(

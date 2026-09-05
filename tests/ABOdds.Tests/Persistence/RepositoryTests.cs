@@ -1,10 +1,55 @@
 using ABOdds.Domain;
+using ABOdds.Services.Alerts;
+using ABOdds.Services.Calculations;
 using Microsoft.EntityFrameworkCore;
 
 namespace ABOdds.Tests.Persistence;
 
 public sealed class RepositoryTests : PostgresTest
 {
+    [PostgresFact]
+    public async Task ReferenceRoles_SurvivePersistenceAndLabelEachAlertCase()
+    {
+        foreach (var excludedBook in new[] { "none", "betonlineag", "pinnacle" })
+        {
+            var batch = Batch();
+            var game = batch.Events.Single();
+            batch = batch with { Events = [game with
+            {
+                Quotes = game.Quotes.Where(quote => quote.BookmakerKey != excludedBook).ToArray()
+            }] };
+            var stored = await ProcessAsync(batch);
+            var opportunity = Assert.Single(stored.Opportunities).Opportunity;
+            var message = DiscordAlertFormatter.Format(opportunity, Now);
+            var expected = excludedBook switch
+            {
+                "betonlineag" => "UNVALIDATED",
+                "pinnacle" => "LOWER confidence",
+                _ => "BetOnline confirmed"
+            };
+            Assert.Contains(expected, message, StringComparison.Ordinal);
+            Assert.DoesNotContain(opportunity.Sources, source => source.BookmakerKey == "lowvig");
+        }
+    }
+
+    [PostgresFact]
+    public async Task ValidationBoundary_UsesUnroundedSourceProbabilitiesAfterPersistence()
+    {
+        var id = await Ingestion.SaveAsync(Batch(), default);
+        var quotes = (await Calculations.LoadBatchQuotesAsync(id, default))!.Quotes;
+        var quote = quotes.Single(value => value.BookmakerKey == "fanduel");
+        var probability = 2m / 3m;
+        var fair = new CalculatedFairValue(quote.MarketId, quote.SelectionKey, quote.SelectionDisplayName,
+            quote.Line, probability, 1m / probability,
+            [
+                new("pinnacle", "Pinnacle", 1.5m, probability, 1m, Now) { Role = FairValueSourceRole.Primary },
+                new("betonlineag", "BetOnline", 1.5m, probability - 0.015m, 0m, Now) { Role = FairValueSourceRole.Validation }
+            ]);
+        await Calculations.SaveFairValuesAsync(id, [fair], Now, default);
+        var stored = await Calculations.LoadFairValuesAsync(id, default);
+        Assert.Single(EvScanner.Scan(quotes, stored, Now, TimeSpan.FromSeconds(90), Ev));
+    }
+
     [PostgresFact]
     public async Task ProductionRetryConfiguration_PersistsPipelineAndReplaysWithoutDuplicates()
     {
@@ -20,7 +65,7 @@ public sealed class RepositoryTests : PostgresTest
 
         await using var db = await Factory.CreateDbContextAsync();
         Assert.True(db.Database.CreateExecutionStrategy().RetriesOnFailure);
-        Assert.Equal(7, await db.OddsSnapshots.CountAsync());
+        Assert.Equal(5, await db.OddsSnapshots.CountAsync());
         Assert.Equal(2, await db.FairValues.CountAsync());
         Assert.Equal(1, await db.EvOpportunities.CountAsync());
         Assert.Equal(1, await db.Alerts.CountAsync());
@@ -43,7 +88,7 @@ public sealed class RepositoryTests : PostgresTest
 
         await using var db = await Factory.CreateDbContextAsync();
         Assert.Equal(1, await db.PollBatches.CountAsync());
-        Assert.Equal(7, await db.OddsSnapshots.CountAsync());
+        Assert.Equal(5, await db.OddsSnapshots.CountAsync());
         Assert.Equal(Now.AddHours(2), (await db.Events.SingleAsync()).CommenceTimeUtc);
     }
 

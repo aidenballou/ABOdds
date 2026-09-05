@@ -201,7 +201,8 @@ public sealed class AlertRepository(
     public async Task MarkSentAsync(
         Guid alertId,
         DateTimeOffset sentAtUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTimeOffset? cooldownUntilUtc = null)
     {
         await using var dbContext = await contextFactory.CreateDbContextAsync(cancellationToken);
         var alert = await dbContext.Alerts.SingleAsync(value => value.Id == alertId, cancellationToken);
@@ -209,6 +210,7 @@ public sealed class AlertRepository(
         alert.DeliveryAttempts++;
         alert.SentAtUtc = sentAtUtc;
         alert.LastDeliveryError = null;
+        alert.RateLimitedUntilUtc = cooldownUntilUtc;
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 

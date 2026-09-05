@@ -62,13 +62,24 @@ public sealed record MarketQuote(
     public string LineKey => OddsKey.FormatLine(Line);
 }
 
+public enum FairValueSourceRole
+{
+    LegacyConsensus,
+    Primary,
+    Validation,
+    Fallback
+}
+
 public sealed record FairValueSource(
     string BookmakerKey,
     string BookmakerTitle,
     decimal OfferedDecimalOdds,
     decimal NoVigProbability,
     decimal ConfiguredWeight,
-    DateTimeOffset SourceUpdatedAtUtc);
+    DateTimeOffset SourceUpdatedAtUtc)
+{
+    public FairValueSourceRole Role { get; init; }
+}
 
 public sealed record CalculatedFairValue(
     Guid MarketId,

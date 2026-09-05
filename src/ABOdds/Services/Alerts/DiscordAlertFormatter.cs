@@ -12,54 +12,46 @@ public static class DiscordAlertFormatter
 
         var conditional = opportunity.MarketKey == MarketKeys.Moneyline ||
             opportunity.Line is { } line && line == decimal.Truncate(line);
-        var probabilityLabel = conditional ? "Fair Probability conditional on no push" : "Fair Probability";
-        var evLabel = conditional ? "EV conditional on no push" : "EV";
         var message = new StringBuilder();
-        message.AppendLine("🟢 **+EV BET**");
+        message.Append("**").Append(FormatSelection(opportunity)).Append("** · **")
+            .Append(AmericanOdds.Format(opportunity.DecimalOdds)).AppendLine("**");
+        message.Append(opportunity.BookmakerTitle).Append(" · **")
+            .Append(FormatPercentage(opportunity.ExpectedValue, includeSign: true)).AppendLine(" EV**");
         message.AppendLine();
         message.Append(opportunity.AwayTeam).Append(" @ ").AppendLine(opportunity.HomeTeam);
         message.Append(opportunity.SportKey == "americanfootball_nfl" ? "NFL" : "NCAAF")
-            .Append(" | ").AppendLine(opportunity.MarketKey switch
+            .Append(" | ").Append(opportunity.MarketKey switch
             {
                 MarketKeys.Moneyline => "Moneyline",
                 MarketKeys.Spread => "Spread",
                 MarketKeys.Total => "Total",
                 _ => opportunity.MarketKey
-            });
-        message.Append("Kickoff: <t:")
+            }).Append(" · Kickoff: <t:")
             .Append(opportunity.CommenceTimeUtc.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture))
             .AppendLine(":f>");
         message.AppendLine();
-        message.Append("**").Append(FormatSelection(opportunity)).AppendLine("**");
-        message.Append(opportunity.BookmakerTitle)
-            .Append(": **")
-            .Append(AmericanOdds.Format(opportunity.DecimalOdds))
-            .AppendLine("**");
-        message.AppendLine();
-        message.Append("Fair Odds: **")
-            .Append(AmericanOdds.Format(opportunity.FairDecimalOdds))
-            .AppendLine("**");
-        message.Append(probabilityLabel).Append(": **")
-            .Append(FormatPercentage(opportunity.FairProbability, includeSign: false))
-            .AppendLine("**");
-        message.Append(evLabel).Append(": **")
-            .Append(FormatPercentage(opportunity.ExpectedValue, includeSign: true))
-            .AppendLine("**");
-        if (conditional) message.AppendLine("Push probability is not estimated.");
-        message.AppendLine();
-        message.AppendLine("Sharp consensus:");
-
-        foreach (var source in opportunity.Sources)
+        message.Append("Fair **").Append(AmericanOdds.Format(opportunity.FairDecimalOdds))
+            .Append("** · Win probability ")
+            .AppendLine(FormatPercentage(opportunity.FairProbability, includeSign: false));
+        var primary = opportunity.Sources.SingleOrDefault(source => source.Role == FairValueSourceRole.Primary);
+        var validator = opportunity.Sources.SingleOrDefault(source => source.Role == FairValueSourceRole.Validation);
+        if (primary is not null)
         {
-            message.Append(source.BookmakerTitle)
-                .Append(' ')
-                .AppendLine(AmericanOdds.Format(source.OfferedDecimalOdds));
+            message.Append("Pinnacle no-vig · ");
+            message.AppendLine(validator is not null ? "BetOnline confirmed" : "UNVALIDATED, BetOnline unavailable");
         }
-
-        message.AppendLine();
-        message.Append("Updated: <t:")
+        else if (opportunity.Sources.Any(source => source.Role == FairValueSourceRole.Fallback))
+        {
+            message.AppendLine("BetOnline no-vig · LOWER confidence, Pinnacle unavailable");
+        }
+        else
+        {
+            message.AppendLine("Historical consensus");
+        }
+        if (conditional) message.AppendLine("EV and win probability exclude pushes. Push probability is not estimated.");
+        message.Append("-# Updated <t:")
             .Append(updatedAtUtc.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture))
-            .Append(":T>");
+            .Append(":R>");
 
         return message.ToString();
     }

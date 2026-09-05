@@ -19,7 +19,7 @@ namespace ABOdds.Tests.Persistence;
 public sealed class ApplicationHostTests : PostgresTest
 {
     [PostgresFact]
-    public async Task RealHost_RunOnce_UsesTenBooksAndPersistsWithoutSendingDiscord()
+    public async Task RealHost_RunOnce_UsesNineBooksAndPersistsWithoutSendingDiscord()
     {
         var odds = new OddsHandler();
         var discord = new DiscordHandler();
@@ -36,13 +36,14 @@ public sealed class ApplicationHostTests : PostgresTest
         {
             var query = uri.Query.TrimStart('?').Split('&').Select(value => value.Split('=', 2))
                 .ToDictionary(pair => pair[0], pair => Uri.UnescapeDataString(pair[1]));
-            Assert.Equal(10, query["bookmakers"].Split(',').Length);
+            Assert.Equal(9, query["bookmakers"].Split(',').Length);
+            Assert.DoesNotContain("lowvig", query["bookmakers"], StringComparison.Ordinal);
             Assert.DoesNotContain("betrivers", query["bookmakers"], StringComparison.Ordinal);
             Assert.Equal("2026-09-04T12:00:00Z", query["commenceTimeFrom"]);
         }
         await using var db = await Factory.CreateDbContextAsync();
         Assert.Equal(2, await db.PollBatches.CountAsync(value => value.AlertRulesCompletedAtUtc != null));
-        Assert.Equal(14, await db.OddsSnapshots.CountAsync());
+        Assert.Equal(10, await db.OddsSnapshots.CountAsync());
         Assert.Equal(2, await db.Alerts.CountAsync(value => value.DeliveryStatus == AlertDeliveryStatus.Pending));
     }
 
@@ -180,7 +181,7 @@ public sealed class ApplicationHostTests : PostgresTest
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
-            Messages.Enqueue(json.RootElement.GetProperty("content").GetString()!);
+            Messages.Enqueue(json.RootElement.GetProperty("embeds")[0].GetProperty("description").GetString()!);
             return new(HttpStatusCode.NoContent);
         }
     }

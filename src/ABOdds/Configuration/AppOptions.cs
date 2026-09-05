@@ -28,7 +28,6 @@ public sealed class FairValueOptions
 {
     public const string SectionName = "FairValue";
 
-    public int MinimumReferenceBooks { get; init; } = 2;
     public IReadOnlyList<ReferenceBookOptions> ReferenceBooks { get; init; } = [];
 }
 
@@ -36,7 +35,6 @@ public sealed class ReferenceBookOptions
 {
     public string Key { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
-    public decimal Weight { get; init; }
 }
 
 public sealed class EvOptions
@@ -44,6 +42,7 @@ public sealed class EvOptions
     public const string SectionName = "Ev";
 
     public decimal MinimumExpectedValue { get; init; } = 0.03m;
+    public decimal MaximumReferenceEvDifference { get; init; } = 0.03m;
     public decimal RealertImprovement { get; init; } = 0.01m;
     public IReadOnlyList<TargetBookOptions> TargetBooks { get; init; } = [];
 }
