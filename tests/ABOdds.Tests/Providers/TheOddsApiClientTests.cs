@@ -19,7 +19,7 @@ public sealed class TheOddsApiClientTests
         using var http = new HttpClient(new StalledBodyHandler());
         var client = new TheOddsApiClient(http,
             Options.Create(new OddsApiOptions { ApiKey = "synthetic", Markets = ["h2h"], RequestTimeout = TimeSpan.FromMilliseconds(50) }),
-            CreateFairValueOptions(), CreateEvOptions(), new FixedClock(Now), NullLogger<TheOddsApiClient>.Instance);
+            RequestBooks(), new FixedClock(Now), NullLogger<TheOddsApiClient>.Instance);
         try
         {
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -36,7 +36,7 @@ public sealed class TheOddsApiClientTests
         using var http = new HttpClient(new RecordingHandler("not-json"));
         var client = new TheOddsApiClient(http,
             Options.Create(new OddsApiOptions { ApiKey = "do-not-log-this-key", Markets = ["h2h"] }),
-            CreateFairValueOptions(), CreateEvOptions(), new FixedClock(Now), logger);
+            RequestBooks(), new FixedClock(Now), logger);
         await Assert.ThrowsAsync<System.Text.Json.JsonException>(() => client.GetOddsAsync("americanfootball_nfl"));
         Assert.Contains("credits remaining 997", Assert.Single(logger.Messages), StringComparison.Ordinal);
         Assert.DoesNotContain("do-not-log-this-key", logger.Messages.Single(), StringComparison.Ordinal);
@@ -101,29 +101,11 @@ public sealed class TheOddsApiClientTests
             ApiKey = "secret key",
             Markets = ["h2h", "spreads", "totals"]
         }),
-        CreateFairValueOptions(),
-        CreateEvOptions(),
+        RequestBooks(),
         new FixedClock(Now),
         NullLogger<TheOddsApiClient>.Instance);
 
-    private static IOptions<FairValueOptions> CreateFairValueOptions() =>
-        Options.Create(new FairValueOptions
-        {
-            ReferenceBooks =
-            [
-                new BookOptions { Key = "Pinnacle" },
-                new BookOptions { Key = "betonlineag" }
-            ]
-        });
-
-    private static IOptions<EvOptions> CreateEvOptions() =>
-        Options.Create(new EvOptions
-        {
-            TargetBooks =
-            [
-                new BookOptions { Key = " FanDuel " }
-            ]
-        });
+    private static OddsRequest RequestBooks() => new(["Pinnacle", "betonlineag", " FanDuel "], ["h2h", "spreads", "totals"]);
 
     private static Dictionary<string, string> ParseQuery(Uri uri) =>
         uri.Query

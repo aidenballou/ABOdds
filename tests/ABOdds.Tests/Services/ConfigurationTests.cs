@@ -8,7 +8,31 @@ namespace ABOdds.Tests.Services;
 public sealed class ConfigurationTests
 {
     [Theory]
-    [InlineData("OddsApi", "OddsApi:Sports:1", "americanfootball_nfl")]
+    [InlineData("baseball_mlb", "baseball_mlb")]
+    [InlineData(" AMERICANFOOTBALL_NFL , baseball_mlb ", "americanfootball_nfl,baseball_mlb")]
+    [InlineData("americanfootball_ncaaf", "americanfootball_ncaaf")]
+    public void EnabledSports_ReplacesDefaultsWithExactlyTheSelectedSports(string setting, string expected)
+    {
+        var builder = ApplicationHost.CreateBuilder(["--OddsApi:EnabledSports=" + setting]);
+        using var host = builder.Build();
+        var options = host.Services.GetRequiredService<IOptions<OddsApiOptions>>().Value;
+        Assert.Equal(expected.Split(','), options.Sports);
+    }
+
+    [Fact]
+    public void Defaults_EnableNflCollegeFootballAndMlb()
+    {
+        using var host = ApplicationHost.CreateBuilder([]).Build();
+        Assert.Equal(["americanfootball_nfl", "americanfootball_ncaaf", "baseball_mlb"],
+            host.Services.GetRequiredService<IOptions<OddsApiOptions>>().Value.Sports);
+    }
+
+    [Theory]
+    [InlineData("OddsApi", "OddsApi:EnabledSports", "americanfootball_nfl, AMERICANFOOTBALL_NFL ")]
+    [InlineData("OddsApi", "OddsApi:EnabledSports", "baseball_mlb,unknown_sport")]
+    [InlineData("OddsApi", "OddsApi:EnabledSports", "")]
+    [InlineData("OddsApi", "OddsApi:EnabledSports", " ")]
+    [InlineData("OddsApi", "OddsApi:EnabledSports", "baseball_mlb,")]
     [InlineData("OddsApi", "OddsApi:Markets:1", "h2h")]
     [InlineData("OddsApi", "OddsApi:Markets:1", "player_pass_yds")]
     [InlineData("OddsApi", "OddsApi:BaseUrl", "relative/path")]

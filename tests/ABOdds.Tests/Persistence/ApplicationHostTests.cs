@@ -19,6 +19,73 @@ namespace ABOdds.Tests.Persistence;
 public sealed class ApplicationHostTests : PostgresTest
 {
     [PostgresFact]
+    public async Task MlbOnly_RequestsAndPersistsAllThreeMarketsForBothDoubleheaderGames()
+    {
+        var odds = new OddsHandler();
+        var discord = new DiscordHandler();
+        var builder = await BuilderAsync(odds, discord, once: true);
+        builder.Configuration["OddsApi:EnabledSports"] = "baseball_mlb";
+        using var host = BuildTestHost(builder);
+        var worker = host.Services.GetRequiredService<OddsPollingWorker>();
+        await host.RunAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(0, worker.ExitCode);
+        var request = Assert.Single(odds.Requests);
+        Assert.Equal("/v4/sports/baseball_mlb/odds", request.AbsolutePath);
+        Assert.Contains("markets=h2h,spreads,totals", Uri.UnescapeDataString(request.Query), StringComparison.Ordinal);
+        Assert.Empty(discord.Messages);
+
+        await using var db = await Factory.CreateDbContextAsync();
+        Assert.NotNull((await db.PollBatches.SingleAsync()).AlertRulesCompletedAtUtc);
+        Assert.Equal(2, await db.Events.CountAsync(game => game.SportKey == "baseball_mlb"));
+        Assert.Equal(36, await db.OddsSnapshots.CountAsync());
+        Assert.Equal(12, await db.FairValues.CountAsync());
+        Assert.Equal(6, await db.EvOpportunities.CountAsync());
+        var alerts = await db.Alerts.ToListAsync();
+        Assert.Equal(6, alerts.Count);
+        Assert.All(alerts, alert =>
+        {
+            Assert.Equal(AlertDeliveryStatus.Pending, alert.DeliveryStatus);
+            Assert.Contains("Arizona Diamondbacks @ Miami Marlins", alert.Message, StringComparison.Ordinal);
+            Assert.Contains("MLB |", alert.Message, StringComparison.Ordinal);
+            Assert.Contains("+7.7% EV", alert.Message, StringComparison.Ordinal);
+        });
+        Assert.Equal(2, alerts.Count(alert => alert.Message.Contains("MLB | Moneyline", StringComparison.Ordinal)));
+        Assert.Equal(2, alerts.Count(alert => alert.Message.Contains("MLB | Run line", StringComparison.Ordinal)));
+        Assert.Equal(2, alerts.Count(alert => alert.Message.Contains("MLB | Total", StringComparison.Ordinal)));
+        Assert.Equal(2, await db.OddsSnapshots.CountAsync(quote => quote.BookmakerKey == "fanduel" &&
+            quote.SelectionKey == "arizona diamondbacks" && quote.Line == -1.5m));
+        Assert.Equal(2, await db.OddsSnapshots.CountAsync(quote => quote.BookmakerKey == "fanduel" &&
+            quote.SelectionKey == "over" && quote.Line == 7.5m));
+    }
+
+    [PostgresFact]
+    public async Task SelectedSports_RequestsOnlyNflAndMlbInConfiguredOrder()
+    {
+        var odds = new OddsHandler();
+        var builder = await BuilderAsync(odds, new DiscordHandler(), once: true);
+        builder.Configuration["OddsApi:EnabledSports"] = "americanfootball_nfl,baseball_mlb";
+        using var host = BuildTestHost(builder);
+        var worker = host.Services.GetRequiredService<OddsPollingWorker>();
+        await host.RunAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(0, worker.ExitCode);
+        Assert.Equal(["/v4/sports/americanfootball_nfl/odds", "/v4/sports/baseball_mlb/odds"],
+            odds.Requests.Select(uri => uri.AbsolutePath));
+    }
+
+    [PostgresFact]
+    public async Task InvalidSport_StopsStartupBeforeAnyHttpRequest()
+    {
+        var odds = new OddsHandler();
+        var discord = new DiscordHandler();
+        var builder = await BuilderAsync(odds, discord, once: true);
+        builder.Configuration["OddsApi:EnabledSports"] = "baseball_mlb,typo";
+        using var host = BuildTestHost(builder);
+        await Assert.ThrowsAsync<OptionsValidationException>(() => host.StartAsync());
+        Assert.Empty(odds.Requests);
+        Assert.Empty(discord.Messages);
+    }
+
+    [PostgresFact]
     public async Task RealHost_RunOnce_UsesNineBooksAndPersistsWithoutSendingDiscord()
     {
         var odds = new OddsHandler();
@@ -134,6 +201,7 @@ public sealed class ApplicationHostTests : PostgresTest
         builder.Configuration["ConnectionStrings:Postgres"] = db.Database.GetConnectionString();
         builder.Configuration["OddsApi:Enabled"] = "true";
         builder.Configuration["OddsApi:ApiKey"] = "synthetic-test-key";
+        builder.Configuration["OddsApi:EnabledSports"] = "americanfootball_nfl,americanfootball_ncaaf";
         if (!once) builder.Configuration["Discord:Enabled"] = "true";
         builder.Configuration["Discord:WebhookUrl"] = "https://discord.test/webhook";
         builder.Configuration["Discord:OutboxPollInterval"] = "00:00:00.01";
@@ -165,13 +233,14 @@ public sealed class ApplicationHostTests : PostgresTest
 
     private sealed class OddsHandler : HttpMessageHandler
     {
+        private static readonly string[] MlbBookKeys = ["pinnacle", "betonlineag", "fanduel"];
         public ConcurrentQueue<Uri> Requests { get; } = new();
         public bool Malformed { get; init; }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var uri = request.RequestUri!;
             Requests.Enqueue(uri);
-            var sport = uri.AbsolutePath.Contains("ncaaf", StringComparison.Ordinal) ? "americanfootball_ncaaf" : "americanfootball_nfl";
+            var sport = uri.Segments[^2].TrimEnd('/');
             var game = Batch().Events.Single();
             var payload = new[]
             {
@@ -189,12 +258,50 @@ public sealed class ApplicationHostTests : PostgresTest
             };
             var response = new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent(Malformed ? "not-json" : JsonSerializer.Serialize(payload))
+                Content = new StringContent(Malformed ? "not-json" : sport == "baseball_mlb" ? MlbResponse() : JsonSerializer.Serialize(payload))
             };
             response.Headers.Add("x-requests-remaining", "1000");
             response.Headers.Add("x-requests-used", "3");
             response.Headers.Add("x-requests-last", "3");
             return Task.FromResult(response);
+        }
+
+        private static string MlbResponse()
+        {
+            // Synthetic decimal prices using the provider's documented MLB response shape.
+            // Distinct event IDs must preserve both games when the teams play a doubleheader.
+            return JsonSerializer.Serialize(Enumerable.Range(1, 2).Select(game => new
+            {
+                id = "mlb-game-" + game,
+                sport_key = "baseball_mlb",
+                home_team = "Miami Marlins",
+                away_team = "Arizona Diamondbacks",
+                commence_time = Now.AddHours(game * 2),
+                bookmakers = MlbBookKeys.Select(book => new
+                {
+                    key = book,
+                    title = book,
+                    last_update = Now,
+                    markets = new[]
+                    {
+                        new { key = "h2h", outcomes = new[]
+                        {
+                            new { name = "Arizona Diamondbacks", price = book == "fanduel" ? 2m : 1.8m, point = (decimal?)null },
+                            new { name = "Miami Marlins", price = book == "fanduel" ? 1.7m : 2.1m, point = (decimal?)null }
+                        } },
+                        new { key = "spreads", outcomes = new[]
+                        {
+                            new { name = "Arizona Diamondbacks", price = book == "fanduel" ? 2m : 1.8m, point = (decimal?)-1.5m },
+                            new { name = "Miami Marlins", price = book == "fanduel" ? 1.7m : 2.1m, point = (decimal?)1.5m }
+                        } },
+                        new { key = "totals", outcomes = new[]
+                        {
+                            new { name = "Over", price = book == "fanduel" ? 2m : 1.8m, point = (decimal?)7.5m },
+                            new { name = "Under", price = book == "fanduel" ? 1.7m : 2.1m, point = (decimal?)7.5m }
+                        } }
+                    }
+                })
+            }));
         }
     }
 

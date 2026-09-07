@@ -27,15 +27,13 @@ public sealed class TheOddsApiClient : IOddsProvider
     public TheOddsApiClient(
         HttpClient httpClient,
         IOptions<OddsApiOptions> oddsApiOptions,
-        IOptions<FairValueOptions> fairValueOptions,
-        IOptions<EvOptions> evOptions,
+        OddsRequest request,
         IClock clock,
         ILogger<TheOddsApiClient> logger)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         ArgumentNullException.ThrowIfNull(oddsApiOptions);
-        ArgumentNullException.ThrowIfNull(fairValueOptions);
-        ArgumentNullException.ThrowIfNull(evOptions);
+        ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(clock);
 
         var options = oddsApiOptions.Value;
@@ -44,8 +42,8 @@ public sealed class TheOddsApiClient : IOddsProvider
         _logger = logger;
         _baseUri = new Uri(options.BaseUrl.TrimEnd('/') + '/');
         _apiKey = options.ApiKey;
-        _markets = options.Markets.ToArray();
-        _bookmakers = GetBookmakers(fairValueOptions.Value, evOptions.Value);
+        _markets = request.MarketKeys.ToArray();
+        _bookmakers = request.BookmakerKeys.Select(key => key.Trim().ToLowerInvariant()).ToArray();
 
         _httpClient.Timeout = options.RequestTimeout;
     }
@@ -91,15 +89,6 @@ public sealed class TheOddsApiClient : IOddsProvider
             _baseUri,
             $"sports/{Uri.EscapeDataString(sportKey.Trim())}/odds?{query}");
     }
-
-    private static string[] GetBookmakers(
-        FairValueOptions fairValueOptions,
-        EvOptions evOptions) =>
-        fairValueOptions.ReferenceBooks
-            .Select(static bookmaker => bookmaker.Key)
-            .Concat(evOptions.TargetBooks.Select(static bookmaker => bookmaker.Key))
-            .Select(static key => key.Trim().ToLowerInvariant())
-            .ToArray();
 
     private static int? ReadIntHeader(HttpResponseMessage response, string name)
     {

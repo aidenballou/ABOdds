@@ -1,9 +1,12 @@
+using ABOdds.Domain;
+
 namespace ABOdds.Configuration;
 
 internal static class OptionsValidation
 {
-    public const string OddsApiError =
-        "OddsApi requires an HTTPS base URL, an API key when enabled, unique supported sports/markets, and a positive timeout.";
+    public static readonly string OddsApiError =
+        "OddsApi requires an HTTPS base URL, an API key when enabled, unique supported markets, and a positive timeout. " +
+        "OddsApi:EnabledSports must be a nonempty comma-separated list of unique supported keys: " + string.Join(", ", SportCatalog.Keys);
     public const string PollingError =
         "Polling intervals, near-event window, and maximum source age must be positive; the near interval cannot exceed the normal interval.";
     public const string FairValueError =
@@ -21,8 +24,7 @@ internal static class OptionsValidation
         (!options.Enabled || !string.IsNullOrWhiteSpace(options.ApiKey)) &&
         options.Sports.Count > 0 &&
         options.Sports.Distinct(StringComparer.Ordinal).Count() == options.Sports.Count &&
-        options.Sports.All(value =>
-            value is "americanfootball_nfl" or "americanfootball_ncaaf") &&
+        options.Sports.All(value => SportCatalog.Find(value) is not null) &&
         options.Markets.Count > 0 &&
         options.Markets.Distinct(StringComparer.Ordinal).Count() == options.Markets.Count &&
         options.Markets.All(value =>

@@ -6,6 +6,20 @@ namespace ABOdds.Tests.Alerts;
 public sealed class DiscordAlertFormatterTests
 {
     [Theory]
+    [InlineData("baseball_mlb", "h2h", "MLB | Moneyline")]
+    [InlineData("baseball_mlb", "spreads", "MLB | Run line")]
+    [InlineData("baseball_mlb", "totals", "MLB | Total")]
+    [InlineData("future_sport", "spreads", "future_sport | Spread")]
+    public void Format_UsesSportCatalogAndPreservesUnknownHistoricalSportKeys(string sport, string market, string label)
+    {
+        var opportunity = TestOpportunity.Create(marketKey: market) with { SportKey = sport };
+        var message = DiscordAlertFormatter.Format(opportunity, opportunity.CommenceTimeUtc.AddMinutes(-5));
+        Assert.Contains(label + " · Start:", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("NCAAF", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Kickoff", message, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData(FairValueSourceRole.Primary, "Pinnacle no-vig", "UNVALIDATED")]
     [InlineData(FairValueSourceRole.Fallback, "BetOnline no-vig", "LOWER confidence")]
     public void Format_LabelsSingleReferenceConfidence(FairValueSourceRole role, string basis, string status)
@@ -72,7 +86,7 @@ public sealed class DiscordAlertFormatterTests
         Assert.Contains("NFL | Total", firstMessage, StringComparison.Ordinal);
         Assert.Contains("Indiana @ Purdue", secondMessage, StringComparison.Ordinal);
         Assert.Contains("NCAAF | Total", secondMessage, StringComparison.Ordinal);
-        Assert.Contains($"Kickoff: <t:{second.CommenceTimeUtc.ToUnixTimeSeconds()}:f>", secondMessage, StringComparison.Ordinal);
+        Assert.Contains($"Start: <t:{second.CommenceTimeUtc.ToUnixTimeSeconds()}:f>", secondMessage, StringComparison.Ordinal);
         Assert.Contains("**Over 44.5**", firstMessage, StringComparison.Ordinal);
         Assert.DoesNotContain("Over +44.5", firstMessage, StringComparison.Ordinal);
         Assert.DoesNotContain("exclude pushes", firstMessage, StringComparison.Ordinal);

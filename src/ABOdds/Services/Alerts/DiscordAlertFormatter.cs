@@ -10,6 +10,7 @@ public static class DiscordAlertFormatter
     {
         ArgumentNullException.ThrowIfNull(opportunity);
 
+        var sport = SportCatalog.Find(opportunity.SportKey);
         var conditional = opportunity.MarketKey == MarketKeys.Moneyline ||
             opportunity.Line is { } line && line == decimal.Truncate(line);
         var message = new StringBuilder();
@@ -19,14 +20,14 @@ public static class DiscordAlertFormatter
             .Append(FormatPercentage(opportunity.ExpectedValue, includeSign: true)).AppendLine(" EV**");
         message.AppendLine();
         message.Append(opportunity.AwayTeam).Append(" @ ").AppendLine(opportunity.HomeTeam);
-        message.Append(opportunity.SportKey == "americanfootball_nfl" ? "NFL" : "NCAAF")
+        message.Append(sport?.DisplayName ?? opportunity.SportKey)
             .Append(" | ").Append(opportunity.MarketKey switch
             {
                 MarketKeys.Moneyline => "Moneyline",
-                MarketKeys.Spread => "Spread",
+                MarketKeys.Spread => sport?.SpreadName ?? "Spread",
                 MarketKeys.Total => "Total",
                 _ => opportunity.MarketKey
-            }).Append(" · Kickoff: <t:")
+            }).Append(" · Start: <t:")
             .Append(opportunity.CommenceTimeUtc.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture))
             .AppendLine(":f>");
         message.AppendLine();

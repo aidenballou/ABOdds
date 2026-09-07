@@ -1,12 +1,55 @@
 # ABOdds
 
-ABOdds is one .NET worker application that polls pregame football odds, calculates exact-line Pinnacle no-vig fair values with BetOnline validation, finds positive expected value, and sends deduplicated Discord alerts. PostgreSQL stores every normalized quote and every downstream decision.
+ABOdds is one .NET worker application that polls pregame NFL, NCAAF, and MLB odds and runs one of two modes. The default EV mode calculates exact-line Pinnacle no-vig fair values with BetOnline validation and sends deduplicated Discord alerts. The optional no-sweat mode optimizes qualifying bets and Bonus Bet conversion for minimum cash profit. PostgreSQL stores quotes and decisions in EV mode; no-sweat mode keeps its snapshots and reports in memory.
 
 There is no HTTP API, UI, message broker, bet placement, player-prop support, or CLV calculation in this version.
 
+Select the [no-sweat cash optimizer](docs/no-sweat.md) with `NO_SWEAT_ENABLED=true`. The application then registers only the no-sweat worker. EV calculations, EV notifications, and database services do not run, including delivery of previously queued EV alerts.
+
 The [code and test audit](docs/code-test-audit-2026-09-05.md) documents the cleanup and verification, including real PostgreSQL and application-host tests. The earlier [readiness audit](docs/readiness-audit-2026-09-04.md) records the deployment fixes. The Docker image builds and starts with both integrations disabled. The next step is the bounded live smoke test below; account-specific book coverage and live delivery have not been verified. Both integrations remain disabled by default.
 
-## Pipeline
+## No-sweat mode
+
+The optimizer compares opposite selections at matching half-point spreads and totals across sportsbooks. It ranks the top five positive-profit plans and sends the results to application logs and Discord when delivery is enabled. Moneylines, whole-number lines, and quarter-point lines are excluded.
+
+For Docker, keep your API key and webhook in `.env` and set:
+
+```dotenv
+NO_SWEAT_ENABLED=true
+NO_SWEAT_STAGE=Qualifying
+NO_SWEAT_PROMO_BOOK=betmgm
+NO_SWEAT_PROMOTION_LIMIT=1500
+NO_SWEAT_BANKROLL=7000
+NO_SWEAT_BONUS_BET_AMOUNT=1500
+NO_SWEAT_MINIMUM_DECIMAL_ODDS=1
+ODDS_API_ENABLED=true
+DISCORD_ENABLED=true
+```
+
+Recreate the worker to apply the settings:
+
+```bash
+docker compose up --build -d worker
+docker compose logs -f worker
+```
+
+`Qualifying` chooses a cash stake up to the promotion limit and an initial hedge. It accounts for the cash available after a qualifying loss when estimating conversion of the refund as one indivisible Bonus Bet. A minimum decimal odds setting of `1` adds no qualifying odds restriction.
+
+Each result includes both sportsbooks and selections, odds, stakes, initial hedge, total bankroll required, qualifying-win profit, projected Bonus Bet value and conversion rate, projected loss-path profit, and projected minimum profit. Future conversion prices are current benchmarks, so the initial result is a projection rather than locked profit.
+
+Once you receive a Bonus Bet, change `NO_SWEAT_STAGE=BonusConversion`, set `NO_SWEAT_BONUS_BET_AMOUNT` to the actual token amount, and set `NO_SWEAT_BANKROLL` to the cash now available for hedging. Recreate the worker again. This stage ranks conversion plans for the entire token and shows the cash result for both outcomes.
+
+Set `NO_SWEAT_ENABLED=false` and recreate the worker to return to EV mode. The shared polling cadence, quote freshness, API credit cap, and integration flags apply to both modes. Hedge books are configured separately under `NoSweat:HedgeBooks` in `src/ABOdds/appsettings.json`.
+
+```text
+The Odds API -> normalization -> latest snapshots in memory
+  -> exact-line matching -> cash optimizer -> top-five report
+  -> application logs and Discord
+```
+
+No-sweat mode assumes cash can move between sportsbooks after settlement. It does not check account balances, promo eligibility, bet limits, or token expiry. Reports and Discord deduplication do not survive a restart. The app needs no database in this mode, though the existing Compose stack still starts PostgreSQL. See the [full no-sweat guide](docs/no-sweat.md) for the cash formulas and assumptions.
+
+## EV pipeline
 
 ```text
 The Odds API
@@ -25,9 +68,9 @@ Discord rate limits pause the whole webhook, including newly queued alerts. The 
 
 Notifications use a compact green embed: selection and offered price, sportsbook and EV, matchup and kickoff, then fair odds and reference confidence. Push caveats remain visible. Reference-price lists and validation arithmetic remain available in stored calculation history rather than occupying the notification. Existing queued messages retain their saved text; newly created alerts use the compact layout.
 
-## V1 rules
+## EV rules
 
-- Sports: NFL and NCAAF FBS
+- Supported sports: NFL, NCAAF FBS, and MLB; select the active leagues with `ODDS_API_SPORTS`
 - Markets: moneyline, spreads, and totals
 - Pregame only
 - Poll each league every five minutes normally and every minute when that league has a known event within six hours
@@ -68,7 +111,39 @@ Target books:
 
 The names and keys follow [The Odds API bookmaker catalog](https://the-odds-api.com/sports-odds-data/bookmaker-apis.html). The provider warns that its public Pinnacle feed may be delayed. BetOnline agreement is a cross-check, not a guarantee of accuracy.
 
-The 9 unique books count as one bookmaker group under The Odds API's current quota rules. One NFL and NCAAF cycle requesting all three markets costs 6 credits when both responses contain events. Five-minute polling around the clock would use 51,840 credits per 30 days before any one-minute windows. Responses with no events cost no credits, and actual usage is reported by the provider. Adding an eleventh book doubles the bookmaker component of the request cost. The worker records `x-requests-remaining`, `x-requests-used`, and `x-requests-last` on every successfully persisted poll. Review the provider's [current quota rules](https://the-odds-api.com/liveapi/guides/v4/) before enabling it.
+The 9 unique books count as one bookmaker group under The Odds API's current quota rules. One NFL, NCAAF, and MLB cycle requesting all three markets costs 9 credits when all three responses contain events. Five-minute polling around the clock would use 77,760 credits per 30 days before any one-minute windows. Responses with no events cost no credits, and actual usage is reported by the provider. Adding an eleventh book doubles the bookmaker component of the request cost. The worker records `x-requests-remaining`, `x-requests-used`, and `x-requests-last` on every successfully persisted poll. Review the provider's [current quota rules](https://the-odds-api.com/liveapi/guides/v4/) before enabling it.
+
+## Select sports
+
+In `.env`, set `ODDS_API_SPORTS` to the exact leagues you want to request. This replaces the whole selection and applies to both EV and no-sweat modes.
+
+Currently supported values:
+
+| Value | League |
+| --- | --- |
+| `americanfootball_nfl` | NFL |
+| `americanfootball_ncaaf` | College football, NCAAF FBS |
+| `baseball_mlb` | MLB |
+
+Use one value or combine values with commas. [SportCatalog.cs](src/ABOdds/Domain/SportCatalog.cs) defines the complete list accepted by this application. Other Odds API sport keys require application support before they can be selected here.
+
+```dotenv
+# All supported sports, the default
+ODDS_API_SPORTS=americanfootball_nfl,americanfootball_ncaaf,baseball_mlb
+
+# MLB only, use this instead of the line above
+ODDS_API_SPORTS=baseball_mlb
+```
+
+Any nonempty subset is accepted. Keys are case-insensitive and surrounding spaces are ignored. Empty lists, empty entries, duplicates, and unsupported keys fail startup before any API request. To stop all polling, use `ODDS_API_ENABLED=false`. Changes take effect after recreating the worker with `docker compose up --build -d worker`.
+
+Compose maps this setting to `OddsApi:EnabledSports`. Direct .NET launches use `OddsApi__EnabledSports` or `--OddsApi:EnabledSports=baseball_mlb`; they do not load `.env`. This scalar setting replaces the old `OddsApi:Sports` indexed array, avoiding .NET array merging that could leave unwanted default leagues enabled. Migrate any custom `OddsApi__Sports__0` overrides to the new setting.
+
+Each selected sport uses one shared request path, normalizer, database schema, and calculation pipeline. MLB uses `baseball_mlb` with `h2h`, `spreads` for run lines, and `totals`, as documented in [The Odds API MLB guide](https://the-odds-api.com/sports/mlb-odds.html). Only full-game pregame markets are supported. Player props, innings markets, and futures are excluded. Distinct provider event IDs keep doubleheader games separate.
+
+To add another league with the same market rules, add its API sport key, display name, and spread label in [SportCatalog.cs](src/ABOdds/Domain/SportCatalog.cs), add representative response and pipeline tests, then include its key in `ODDS_API_SPORTS`. Update the supported-values table above when adding a league. Registration does not automatically enable a new league. No separate client or worker is needed. Sports with different outcomes or settlement rules, such as three-way moneylines, require calculation support first. Verify reference-book coverage and matching settlement rules for each new sport.
+
+With nine books, EV mode estimates three credits per selected sport per poll; no-sweat mode estimates two. Removing a league stops new requests for it after restart. In EV mode, existing paid snapshots and queued alerts still follow normal recovery and expiry rules.
 
 ## Run with Docker
 
@@ -86,7 +161,7 @@ docker compose up -d postgres
 docker compose run --rm worker --once
 ```
 
-`--once` enables odds fetching, forces Discord delivery off, and makes at most one request per configured league. It prints the request count and estimated per-request credits before fetching. With the default nine books and three markets, that is at most two requests, normally six credits total. It stores snapshots, calculations, and pending alerts, then exits. There are no automatic HTTP retries. Empty responses can cost less. This command uses a real API key and is not a free offline test.
+`--once` enables odds fetching, forces Discord delivery off, and makes at most one request per configured league. It prints the request count and estimated per-request credits before fetching. In EV mode, the default nine books and three markets mean at most three requests, normally nine credits total. It stores snapshots, calculations, and pending alerts, then exits. In no-sweat mode, it prints the cash optimization reports without database writes; the default seven books and two markets normally cost six credits total across the three default sports. There are no automatic HTTP retries. Empty responses can cost less. This command uses a real API key and is not a free offline test.
 
 After the smoke test succeeds and you review its logs, enable both integrations and choose `MAXIMUM_CREDITS_PER_RUN` for continuous operation:
 
@@ -95,9 +170,9 @@ docker compose up --build -d
 docker compose logs -f worker
 ```
 
-The application applies EF Core migrations during startup. PostgreSQL listens only on `127.0.0.1:${POSTGRES_PORT:-5432}` and stores data in the `postgres-data` volume. Set `POSTGRES_PORT` if port 5432 is already in use.
+In EV mode, the application applies EF Core migrations during startup. PostgreSQL listens only on `127.0.0.1:${POSTGRES_PORT:-5432}` and stores data in the `postgres-data` volume. Set `POSTGRES_PORT` if port 5432 is already in use.
 
-The worker stops with a nonzero exit code on a provider, persistence, or processing failure. Its Compose service intentionally does not restart automatically: inspect the error and fix it before restarting, so a persistent failure cannot drain paid credits. PostgreSQL retains its automatic restart policy. On a worker restart, existing unfinished batches are processed before fetching anything new.
+The worker stops with a nonzero exit code on a provider, persistence, or processing failure. Its Compose service intentionally does not restart automatically: inspect the error and fix it before restarting, so a persistent failure cannot drain paid credits. PostgreSQL retains its automatic restart policy. In EV mode, a worker restart processes existing unfinished batches before fetching anything new.
 
 `Polling:MaximumCreditsPerRun` is an optional per-process cap, exposed as `MAXIMUM_CREDITS_PER_RUN` in Compose. The worker checks the estimated next-request cost against the remaining cap and reported provider balance. Missing quota headers stop further requests after saving the response. Quota is logged before deserialization or database writes. A blank cap means no configured per-run ceiling; the provider-balance guard still applies. The cap resets on process restart and is not a monthly account budget. Other applications using the same key can spend credits independently.
 
@@ -119,13 +194,16 @@ dotnet tool restore
 dotnet run --project src/ABOdds/ABOdds.csproj
 ```
 
-Configuration uses standard .NET keys. Environment variables use double underscores, for example:
+Direct `dotnet run` does not load `.env`. Configuration uses standard .NET keys. Environment variables use double underscores, for example:
 
 ```bash
 OddsApi__Enabled=true
 OddsApi__ApiKey=replace-me
+OddsApi__EnabledSports=baseball_mlb
 Discord__Enabled=true
 Discord__WebhookUrl=https://discord.com/api/webhooks/replace-me
+NoSweat__Enabled=true
+NoSweat__Stage=Qualifying
 ```
 
 Run the checks:
@@ -147,7 +225,7 @@ bash scripts/test.sh
 
 The script starts a temporary PostgreSQL server on an available localhost port, runs all tests, and removes that server afterward. Application-host tests use the real startup registration, migrations, repositories, workers, and HTTP adapters. Only external HTTP responses are substituted. Settings load from the application output directory, so launching from another working directory does not lose `appsettings.json`.
 
-## Stored data
+## EV stored data
 
 - `poll_batches` records each successfully persisted provider response, observation time, quota headers, processing status, and immutable event metadata captured at that observation.
 - `events` stores provider event IDs, teams, sport, and kickoff time.

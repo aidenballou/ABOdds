@@ -27,9 +27,17 @@ services:
       ConnectionStrings__Postgres: Host=postgres;Port=5432;Database=abodds;Username=abodds;Password=${POSTGRES_PASSWORD:-abodds};GSS Encryption Mode=Disable
       OddsApi__Enabled: ${ODDS_API_ENABLED:-false}
       OddsApi__ApiKey: ${ODDS_API_KEY:-}
+      OddsApi__EnabledSports: ${ODDS_API_SPORTS-americanfootball_nfl,americanfootball_ncaaf,baseball_mlb}
       Discord__Enabled: ${DISCORD_ENABLED:-false}
       Discord__WebhookUrl: ${DISCORD_WEBHOOK_URL:-}
       Polling__MaximumCreditsPerRun: ${MAXIMUM_CREDITS_PER_RUN:-}
+      NoSweat__Enabled: ${NO_SWEAT_ENABLED:-false}
+      NoSweat__Stage: ${NO_SWEAT_STAGE:-Qualifying}
+      NoSweat__PromoBook: ${NO_SWEAT_PROMO_BOOK:-betmgm}
+      NoSweat__PromotionLimit: ${NO_SWEAT_PROMOTION_LIMIT:-1500}
+      NoSweat__Bankroll: ${NO_SWEAT_BANKROLL:-7000}
+      NoSweat__BonusBetAmount: ${NO_SWEAT_BONUS_BET_AMOUNT:-1500}
+      NoSweat__MinimumQualifyingDecimalOdds: ${NO_SWEAT_MINIMUM_DECIMAL_ODDS:-1}
 
 volumes:
   postgres-data:

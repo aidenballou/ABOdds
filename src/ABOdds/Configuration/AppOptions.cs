@@ -7,7 +7,9 @@ public sealed class OddsApiOptions
     public bool Enabled { get; init; }
     public string BaseUrl { get; init; } = "https://api.the-odds-api.com/v4/";
     public string ApiKey { get; init; } = string.Empty;
-    public IReadOnlyList<string> Sports { get; init; } = [];
+    public string EnabledSports { get; init; } = string.Empty;
+    public IReadOnlyList<string> Sports => EnabledSports.Split(',', StringSplitOptions.TrimEntries)
+        .Select(key => key.ToLowerInvariant()).ToArray();
     public IReadOnlyList<string> Markets { get; init; } = [];
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
 }

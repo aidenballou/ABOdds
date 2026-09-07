@@ -125,7 +125,7 @@ public sealed class PollingWorkerTests : PostgresTest
         var pipeline = new OddsPipeline(Calculations, Alerts, options,
             Options.Create(References), Options.Create(Ev), new SemaphoreSlim(1, 1), clock);
         return new(provider, Ingestion, pipeline, new AdaptivePollingSchedule(polling),
-            Options.Create(new OddsApiOptions { Enabled = true, Sports = ["americanfootball_nfl", "americanfootball_ncaaf"] }),
+            Options.Create(new OddsApiOptions { Enabled = true, EnabledSports = "americanfootball_nfl,americanfootball_ncaaf" }),
             options, new TestLifetime(), clock, NullLogger<OddsPollingWorker>.Instance);
     }
 
